@@ -34,3 +34,5 @@ fi
 
 wget $BLOB/finetune/nlvr-base.tar -P $DOWNLOAD/finetune/
 tar -xvf $DOWNLOAD/finetune/nlvr-base.tar -C $DOWNLOAD/finetune
+
+

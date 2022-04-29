@@ -49,7 +49,7 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
         new_emb.weight.data[:orig_word_num, :].copy_(emb)
         self.uniter.embeddings.word_embeddings = new_emb
 
-    def forward(self, batch, compute_loss=True):
+    def forward(self, batch, compute_loss=True, output_attention=False, draw_attention=None):
         batch = defaultdict(lambda: None, batch)
         input_ids = batch['input_ids']
         position_ids = batch['position_ids']
@@ -58,11 +58,20 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
         attn_masks = batch['attn_masks']
         gather_index = batch['gather_index']
         txt_type_ids = batch['txt_type_ids']
-        sequence_output = self.uniter(input_ids, position_ids,
-                                      img_feat, img_pos_feat,
-                                      attn_masks, gather_index,
-                                      output_all_encoded_layers=False,
-                                      txt_type_ids=txt_type_ids)
+        if output_attention:
+            sequence_output, attention_dict, attention_mask = self.uniter(input_ids, position_ids,
+                                                                          img_feat, img_pos_feat,
+                                                                          attn_masks, gather_index,
+                                                                          output_all_encoded_layers=False,
+                                                                          txt_type_ids=txt_type_ids,
+                                                                          output_attention=True,
+                                                                          draw_attention=draw_attention)
+        else:
+            sequence_output = self.uniter(input_ids, position_ids,
+                                          img_feat, img_pos_feat,
+                                          attn_masks, gather_index,
+                                          output_all_encoded_layers=False,
+                                          txt_type_ids=txt_type_ids)
         pooled_output = self.uniter.pooler(sequence_output)
         rank_scores = self.vcr_output(pooled_output)
 
@@ -71,7 +80,11 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
             vcr_loss = F.cross_entropy(
                     rank_scores, targets.squeeze(-1),
                     reduction='mean')
+            if output_attention:
+                return vcr_loss, attention_dict, attention_mask
             return vcr_loss
         else:
             rank_scores = rank_scores[:, 1:]
+            if output_attention:
+                return rank_scores, attention_dict, attention_mask
             return rank_scores

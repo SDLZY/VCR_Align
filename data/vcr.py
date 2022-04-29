@@ -16,6 +16,7 @@ from .data import (DetectFeatTxtTokDataset, TxtTokLmdb, DetectFeatLmdb,
 
 
 class VcrTxtTokLmdb(TxtTokLmdb):
+    ''' 加了特殊token和最大长度限制 '''
     def __init__(self, db_dir, max_txt_len=120, task="qa,qar"):
         assert task == "qa" or task == "qar" or task == "qa,qar",\
             "VCR only support the following tasks: 'qa', 'qar' or 'qa,qar'"

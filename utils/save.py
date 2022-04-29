@@ -28,30 +28,30 @@ def save_training_meta(args):
     with open(join(args.output_dir, 'log', 'model.json'), 'w') as writer:
         json.dump(model_config, writer, indent=4)
     # git info
-    try:
-        LOGGER.info("Waiting on git info....")
-        c = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
-                           timeout=10, stdout=subprocess.PIPE)
-        git_branch_name = c.stdout.decode().strip()
-        LOGGER.info("Git branch: %s", git_branch_name)
-        c = subprocess.run(["git", "rev-parse", "HEAD"],
-                           timeout=10, stdout=subprocess.PIPE)
-        git_sha = c.stdout.decode().strip()
-        LOGGER.info("Git SHA: %s", git_sha)
-        git_dir = abspath(dirname(__file__))
-        git_status = subprocess.check_output(
-            ['git', 'status', '--short'],
-            cwd=git_dir, universal_newlines=True).strip()
-        with open(join(args.output_dir, 'log', 'git_info.json'),
-                  'w') as writer:
-            json.dump({'branch': git_branch_name,
-                       'is_dirty': bool(git_status),
-                       'status': git_status,
-                       'sha': git_sha},
-                      writer, indent=4)
-    except subprocess.TimeoutExpired as e:
-        LOGGER.exception(e)
-        LOGGER.warn("Git info not found. Moving right along...")
+    # try:
+    #     LOGGER.info("Waiting on git info....")
+    #     c = subprocess.run(["git", "rev-parse", "--abbrev-ref", "HEAD"],
+    #                        timeout=10, stdout=subprocess.PIPE)
+    #     git_branch_name = c.stdout.decode().strip()
+    #     LOGGER.info("Git branch: %s", git_branch_name)
+    #     c = subprocess.run(["git", "rev-parse", "HEAD"],
+    #                        timeout=10, stdout=subprocess.PIPE)
+    #     git_sha = c.stdout.decode().strip()
+    #     LOGGER.info("Git SHA: %s", git_sha)
+    #     git_dir = abspath(dirname(__file__))
+    #     git_status = subprocess.check_output(
+    #         ['git', 'status', '--short'],
+    #         cwd=git_dir, universal_newlines=True).strip()
+    #     with open(join(args.output_dir, 'log', 'git_info.json'),
+    #               'w') as writer:
+    #         json.dump({'branch': git_branch_name,
+    #                    'is_dirty': bool(git_status),
+    #                    'status': git_status,
+    #                    'sha': git_sha},
+    #                   writer, indent=4)
+    # except subprocess.TimeoutExpired as e:
+    #     LOGGER.exception(e)
+    #     LOGGER.warn("Git info not found. Moving right along...")
 
 
 class ModelSaver(object):

@@ -13,6 +13,7 @@ from io import open
 
 import torch
 from torch import nn
+from torch.nn.utils.rnn import pad_sequence
 from apex.normalization.fused_layer_norm import FusedLayerNorm
 
 from .layer import BertLayer, BertPooler
@@ -280,15 +281,35 @@ class UniterEncoder(nn.Module):
                                     for _ in range(config.num_hidden_layers)])
 
     def forward(self, input_, attention_mask,
-                output_all_encoded_layers=True):
+                output_all_encoded_layers=True, output_attention=False, last_attention_mask=None):
         all_encoder_layers = []
+        all_attention_list = []
         hidden_states = input_
-        for layer_module in self.layer:
-            hidden_states = layer_module(hidden_states, attention_mask)
+        for layer_module in self.layer[:-1]:
+            layer_output = layer_module(hidden_states, attention_mask, output_attention=output_attention)
+            if output_attention:
+                hidden_states, attention_dict = layer_output
+                all_attention_list.append(attention_dict)
+            else:
+                hidden_states = layer_output
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
+        # 最后一层
+        if last_attention_mask is None:
+            last_attention_mask = attention_mask
+        layer_output = self.layer[-1](hidden_states, last_attention_mask, output_attention=output_attention)
+        if output_attention:
+            hidden_states, attention_dict = layer_output
+            all_attention_list.append(attention_dict)
+        else:
+            hidden_states = layer_output
+        if output_all_encoded_layers:
+            all_encoder_layers.append(hidden_states)
+
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
+        if output_attention:
+            return all_encoder_layers, all_attention_list
         return all_encoder_layers
 
 
@@ -337,7 +358,8 @@ class UniterModel(UniterPreTrainedModel):
                 img_feat, img_pos_feat,
                 attention_mask, gather_index=None, img_masks=None,
                 output_all_encoded_layers=True,
-                txt_type_ids=None, img_type_ids=None):
+                txt_type_ids=None, img_type_ids=None,
+                output_attention=False, draw_attention=None):
         # compute self-attention mask
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
         extended_attention_mask = extended_attention_mask.to(
@@ -359,9 +381,47 @@ class UniterModel(UniterPreTrainedModel):
                 img_feat, img_pos_feat,
                 gather_index, img_masks, txt_type_ids, img_type_ids)
 
-        encoded_layers = self.encoder(
-            embedding_output, extended_attention_mask,
-            output_all_encoded_layers=output_all_encoded_layers)
+        num_txt_tokens = ((gather_index[:, :] < input_ids.shape[1]).long() * attention_mask).sum(-1)
+        last_extended_attention_mask = extended_attention_mask.clone().repeat(1, 1, extended_attention_mask.shape[-1], 1)
+        for i, n in enumerate(num_txt_tokens):
+           last_extended_attention_mask[i, :, 0, :n] -= 10000.0
+        if output_attention:
+            encoded_layers, all_attention_list = self.encoder(
+                embedding_output,
+                # extended_attention_mask,
+                last_extended_attention_mask,
+                output_all_encoded_layers=output_all_encoded_layers, output_attention=True,
+                # last_attention_mask=last_extended_attention_mask
+            )
+        else:
+            encoded_layers = self.encoder(
+                embedding_output,
+                # extended_attention_mask,
+                last_extended_attention_mask,
+                output_all_encoded_layers=output_all_encoded_layers,
+                # last_attention_mask=last_extended_attention_mask
+            )
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
+        if output_attention:
+            # num_tokens = (extended_attention_mask.squeeze(1).squeeze(1) == 0).sum(-1)
+            # num_txt_tokens = ((gather_index[:, :] < input_ids.shape[1]).long() * attention_mask).sum(-1)
+            if draw_attention is not None:
+                draw_attention(all_attention_list, attention_mask, num_txt_tokens)
+            img_mask = attention_mask.clone()
+            for i, n in enumerate(num_txt_tokens):
+                img_mask[i, :n] = 0
+            img_mask_new = img_mask.new_zeros((img_mask.shape[0], img_mask.sum(-1).max()))
+            for i in range(len(num_txt_tokens)):
+                img_mask_new[i, :img_mask[i].sum().item()] = 1
+            cls_att_dict = {}
+            for layer in range(12):
+                cls_attention = all_attention_list[layer]['scores'][:, :, 0]
+                bs, num_heads, _ = cls_attention.shape
+                cls_attention_new = cls_attention.new_zeros((bs, num_heads, img_mask_new.shape[-1]))
+                cls_attention_new[img_mask_new.unsqueeze(1).repeat(1, num_heads, 1) > 0] = cls_attention[
+                    img_mask.unsqueeze(1).repeat(1, num_heads, 1) > 0]
+                cls_att_dict[layer] = cls_attention_new.view(bs//4, 4, num_heads, -1)
+            img_mask_new = img_mask_new.unsqueeze(1).repeat(1, num_heads, 1).view(bs//4, 4, num_heads, -1)
+            return encoded_layers, cls_att_dict, img_mask_new
         return encoded_layers

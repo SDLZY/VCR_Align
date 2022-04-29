@@ -72,7 +72,7 @@ class BertSelfAttention(nn.Module):
         x = x.view(*new_x_shape)
         return x.permute(0, 2, 1, 3)
 
-    def forward(self, hidden_states, attention_mask):
+    def forward(self, hidden_states, attention_mask, output_attention=False):
         mixed_query_layer = self.query(hidden_states)
         mixed_key_layer = self.key(hidden_states)
         mixed_value_layer = self.value(hidden_states)
@@ -98,7 +98,10 @@ class BertSelfAttention(nn.Module):
         context_layer = context_layer.permute(0, 2, 1, 3).contiguous()
         new_context_layer_shape = context_layer.size()[:-2] + (self.all_head_size,)
         context_layer = context_layer.view(*new_context_layer_shape)
-        return context_layer
+        if output_attention:
+            return context_layer, {'scores': attention_scores, 'probs': attention_probs}
+        else:
+            return context_layer
 
 
 class BertSelfOutput(nn.Module):
@@ -121,10 +124,15 @@ class BertAttention(nn.Module):
         self.self = BertSelfAttention(config)
         self.output = BertSelfOutput(config)
 
-    def forward(self, input_tensor, attention_mask):
-        self_output = self.self(input_tensor, attention_mask)
-        attention_output = self.output(self_output, input_tensor)
-        return attention_output
+    def forward(self, input_tensor, attention_mask, output_attention=False):
+        if output_attention:
+            self_output, attention_dict = self.self(input_tensor, attention_mask, output_attention=True)
+            attention_output = self.output(self_output, input_tensor)
+            return attention_output, attention_dict
+        else:
+            self_output = self.self(input_tensor, attention_mask)
+            attention_output = self.output(self_output, input_tensor)
+            return attention_output
 
 
 class BertIntermediate(nn.Module):
@@ -163,11 +171,17 @@ class BertLayer(nn.Module):
         self.intermediate = BertIntermediate(config)
         self.output = BertOutput(config)
 
-    def forward(self, hidden_states, attention_mask):
-        attention_output = self.attention(hidden_states, attention_mask)
+    def forward(self, hidden_states, attention_mask, output_attention=False):
+        if output_attention:
+            attention_output, attention_dict = self.attention(hidden_states, attention_mask, output_attention=True)
+        else:
+            attention_output = self.attention(hidden_states, attention_mask)
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
-        return layer_output
+        if output_attention:
+            return layer_output, attention_dict
+        else:
+            return layer_output
 
 
 class BertPooler(nn.Module):

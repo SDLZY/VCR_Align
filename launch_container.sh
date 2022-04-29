@@ -11,7 +11,7 @@ if [ -z $CUDA_VISIBLE_DEVICES ]; then
 fi
 
 
-docker run --gpus '"'device=$CUDA_VISIBLE_DEVICES'"' --ipc=host --rm -it \
+docker run --gpus '"'device=$CUDA_VISIBLE_DEVICES'"' --ipc=host -it \
     --mount src=$(pwd),dst=/src,type=bind \
     --mount src=$OUTPUT,dst=/storage,type=bind \
     --mount src=$PRETRAIN_DIR,dst=/pretrain,type=bind,readonly \

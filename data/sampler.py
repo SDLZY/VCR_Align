@@ -14,13 +14,17 @@ from cytoolz import partition_all
 
 
 class TokenBucketSampler(Sampler):
+    """按照token总长度组织batch，尽可能把长度相似的样本放在一起"""
     def __init__(self, lens, bucket_size, batch_size,
-                 droplast=False, size_multiple=8):
+                 droplast=False, size_multiple=2, seed=None):
         self._lens = lens
         self._max_tok = batch_size
         self._bucket_size = bucket_size
         self._droplast = droplast
         self._size_mul = size_multiple
+        self._generator = torch.Generator()
+        if seed is not None:
+            self._generator.manual_seed(seed)
 
     def _create_ids(self):
         return list(range(len(self._lens)))
@@ -30,7 +34,8 @@ class TokenBucketSampler(Sampler):
 
     def __iter__(self):
         ids = self._create_ids()
-        random.shuffle(ids)
+        # random.shuffle(ids)
+        ids = [ids[i] for i in torch.randperm(len(ids), generator=self._generator)]
         buckets = [sorted(ids[i:i+self._bucket_size],
                           key=self._sort_fn, reverse=True)
                    for i in range(0, len(ids), self._bucket_size)]
@@ -53,7 +58,8 @@ class TokenBucketSampler(Sampler):
                     batch_indices.extend(indices)
             if not self._droplast and batch_indices:
                 batches.append(batch_indices)
-        random.shuffle(batches)
+        # random.shuffle(batches)
+        batches = [batches[i] for i in torch.randperm(len(batches), generator=self._generator)]
         return iter(batches)
 
     def __len__(self):

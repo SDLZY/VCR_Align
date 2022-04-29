@@ -34,6 +34,13 @@ from utils.distributed import (all_reduce_and_rescale_tensors, all_gather_list,
 from utils.save import ModelSaver, save_training_meta
 from utils.misc import NoOp, parse_with_config, set_dropout, set_random_seed
 from utils.const import BUCKET_SIZE, IMG_DIM
+from model.losses import get_align_model
+import numpy as np
+
+import cytoolz
+
+from utils.visualize import get_attention_drawer
+
 NUM_SPECIAL_TOKENS = 81
 
 
@@ -52,6 +59,35 @@ def build_dataloader(dataset, collate_fn, is_train, opts):
                                 pin_memory=opts.pin_mem, collate_fn=collate_fn)
     dataloader = PrefetchLoader(dataloader)
     return dataloader
+
+
+def build_aligned_dataloader(dataset_qa, dataset_qar, collate_fn, is_train, opts):
+    batch_size = (opts.train_batch_size if is_train
+                  else opts.val_batch_size)
+    if is_train:
+        sampler_qa = TokenBucketSampler([i + j for i, j in zip(dataset_qa.lens, dataset_qar.lens)],
+                                        bucket_size=BUCKET_SIZE,
+                                        batch_size=batch_size, droplast=is_train, seed=42)
+        sampler_qar = TokenBucketSampler([i + j for i, j in zip(dataset_qa.lens, dataset_qar.lens)],
+                                         bucket_size=BUCKET_SIZE,
+                                         batch_size=batch_size, droplast=is_train, seed=42)
+        dataloader_qa = DataLoader(dataset_qa, batch_sampler=sampler_qa,
+                                   num_workers=opts.n_workers,
+                                   pin_memory=opts.pin_mem, collate_fn=collate_fn)
+        dataloader_qar = DataLoader(dataset_qar, batch_sampler=sampler_qar,
+                                    num_workers=opts.n_workers,
+                                    pin_memory=opts.pin_mem, collate_fn=collate_fn)
+
+    else:
+        dataloader_qa = DataLoader(dataset_qa, batch_size=batch_size,
+                                   num_workers=opts.n_workers, shuffle=False,
+                                   pin_memory=opts.pin_mem, collate_fn=collate_fn)
+        dataloader_qar = DataLoader(dataset_qar, batch_size=batch_size,
+                                    num_workers=opts.n_workers, shuffle=False,
+                                    pin_memory=opts.pin_mem, collate_fn=collate_fn)
+    dataloader_qa = PrefetchLoader(dataloader_qa)
+    dataloader_qar = PrefetchLoader(dataloader_qar)
+    return dataloader_qa, dataloader_qar
 
 
 def build_optimizer(model, opts):
@@ -137,17 +173,22 @@ def main(opts):
     # train
     LOGGER.info(f"Loading Train Dataset "
                 f"{opts.train_txt_dbs}, {opts.train_img_dbs}")
-    train_datasets = []
+    train_datasets_qa = []
+    train_datasets_qar = []
     for txt_path, img_path in zip(opts.train_txt_dbs, opts.train_img_dbs):
         img_db, img_db_gt = load_img_feat(img_path, all_img_dbs, opts)
         qa_txt_db = VcrTxtTokLmdb(txt_path, opts.max_txt_len, task="qa")
         qar_txt_db = VcrTxtTokLmdb(txt_path, opts.max_txt_len, task="qar")
-        train_datasets.append(
+        qa_txt_db.id2len = dict((k, qa_txt_db.id2len[k]) for k in qar_txt_db.id2len.keys())  # 保持样本数一致
+        train_datasets_qa.append(
             VcrDataset(qa_txt_db, img_db_gt=img_db_gt, img_db=img_db))
-        train_datasets.append(
+        train_datasets_qar.append(
             VcrDataset(qar_txt_db, img_db_gt=img_db_gt, img_db=img_db))
-    train_dataset = ConcatDatasetWithLens(train_datasets)
-    train_dataloader = build_dataloader(train_dataset, vcr_collate, True, opts)
+    train_dataset_qa = ConcatDatasetWithLens(train_datasets_qa)
+    train_dataset_qar = ConcatDatasetWithLens(train_datasets_qar)
+    # train_dataloader = build_dataloader(train_dataset, vcr_collate, True, opts)
+    train_dataloader_qa, train_dataloader_qar = build_aligned_dataloader(
+        train_dataset_qa, train_dataset_qar, vcr_collate, True, opts)
     # val
     LOGGER.info(f"Loading Val Dataset {opts.val_txt_db}, {opts.val_img_db}")
     val_img_db, val_img_db_gt = load_img_feat(
@@ -211,6 +252,7 @@ def main(opts):
         pbar = tqdm(total=opts.num_train_steps)
         model_saver = ModelSaver(join(opts.output_dir, 'ckpt'))
         os.makedirs(join(opts.output_dir, 'results'))  # store VQA predictions
+        os.makedirs(join(opts.output_dir, 'figures'))  # store VQA predictions
         add_log_to_file(join(opts.output_dir, 'log', 'log.txt'))
     else:
         LOGGER.disabled = True
@@ -218,12 +260,23 @@ def main(opts):
         model_saver = NoOp()
 
     LOGGER.info(f"***** Running training with {n_gpu} GPUs *****")
-    LOGGER.info("  Num examples = %d", len(train_dataset) * hvd.size())
+    assert len(train_dataset_qa) == len(train_dataset_qar), 'Difference size of qa and qar'
+    LOGGER.info("  Num examples = %d", len(train_dataset_qa) * hvd.size())
     LOGGER.info("  Batch size = %d", opts.train_batch_size)
     LOGGER.info("  Accumulate steps = %d", opts.gradient_accumulation_steps)
     LOGGER.info("  Num steps = %d", opts.num_train_steps)
 
+    # align_fn = AlignLoss(sim_fn='spearman', loss_fn='mrl', layers=(11,), per_head=True)
+    # align_fn = AlignLoss(sim_fn='arcface', layers=(11,))
+    # align_fn = AlignLoss(sim_fn='arcface', layers=list(range(12)))
+    align_fn = get_align_model(
+        model_params={'name': 'align4', 'layers': (11, ), 'per_head': True},
+        sim_fn_params={'name': 'spearman'},
+        loss_fn_params={'name': 'mrl', 'margin': 0.2}
+    )
+
     running_loss = RunningMeter('loss')
+    running_loss_align = RunningMeter('loss_align')
     model.train()
     n_examples = 0
     n_epoch = 0
@@ -232,11 +285,21 @@ def main(opts):
     optimizer.zero_grad()
     optimizer.step()
     while True:
-        for step, batch in enumerate(train_dataloader):
-            n_examples += batch['input_ids'].size(0)
+        for step, (batch_qa, batch_qar) in enumerate(zip(train_dataloader_qa, train_dataloader_qar)):
+            n_examples += batch_qa['input_ids'].size(0)
 
-            loss = model(batch, compute_loss=True)
-            loss = loss.mean()
+            loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True)
+            loss_qa = loss_qa.mean()
+
+            loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True)
+            loss_qar = loss_qar.mean()
+
+            loss_align, out_align = align_fn(
+                att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
+                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
+            )
+
+            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align*0.05
             delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
             with amp.scale_loss(loss, optimizer, delay_unscale=delay_unscale
                                 ) as scaled_loss:
@@ -250,6 +313,7 @@ def main(opts):
                     all_reduce_and_rescale_tensors(grads, float(1))
 
             running_loss(loss.item())
+            running_loss_align(loss_align.item())
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
                 global_step += 1
@@ -268,6 +332,7 @@ def main(opts):
                 # log loss
                 # NOTE: not gathered across GPUs for efficiency
                 TB_LOGGER.add_scalar('loss', running_loss.val, global_step)
+                TB_LOGGER.add_scalar('loss_align', running_loss_align.val, global_step)
                 TB_LOGGER.step()
 
                 # update model params
@@ -292,7 +357,7 @@ def main(opts):
 
                 if global_step % opts.valid_steps == 0:
                     val_log, results = validate(
-                        model, val_dataloader)
+                        model, val_dataloader, align_fn=align_fn)
                     TB_LOGGER.log_scaler_dict(val_log)
                     model_saver.save(model, global_step)
             if global_step >= opts.num_train_steps:
@@ -327,7 +392,7 @@ def compute_accuracies(out_qa, labels_qa, out_qar, labels_qar):
 
 
 @torch.no_grad()
-def validate(model, val_loader):
+def validate(model, val_loader, align_fn=None, visualize=False):
     if hvd.rank() == 0:
         val_pbar = tqdm(total=len(val_loader))
     else:
@@ -340,34 +405,70 @@ def validate(model, val_loader):
     st = time()
     results = {}
     for i, batch in enumerate(val_loader):
-        scores = model(batch, compute_loss=False)
+        # 分开qa和qar的输入部分
+        batch_qa, batch_qar = {}, {}
+        qids = batch['qids']
+        for key, value in batch.items():
+            if len(value) == len(qids)*8:
+                qa_idxs = list(cytoolz.concat([(8 * i, 8 * i + 1, 8 * i + 2, 8 * i + 3) for i in range(len(qids))]))
+                qar_idxs = list(cytoolz.concat([(8 * i + 4, 8 * i + 5, 8 * i + 6, 8 * i + 7) for i in range(len(qids))]))
+                batch_qa[key] = value[qa_idxs]
+                batch_qar[key] = value[qar_idxs]
+            else:
+                batch_qa[key] = value
+                batch_qar[key] = value
+
+        # scores = model(batch, compute_loss=False)
+        drawer_qa = None
+        drawer_qar = None
+        if visualize and n_ex % 1000 == 0:
+            dirname = os.path.join(LOGGER.handlers[0].baseFilename[:-12], 'figures')
+            drawer_qa = get_attention_drawer(os.path.join(dirname, f'attention_map_qa_{n_ex}.png'))
+            drawer_qar = get_attention_drawer(os.path.join(dirname, f'attention_map_qar_{n_ex}.png'))
+        scores1, att_qa, att_qa_mask = model(batch_qa, compute_loss=False, output_attention=True, draw_attention=drawer_qa)
+        scores2, att_qar, att_qar_mask = model(batch_qar, compute_loss=False, output_attention=True, draw_attention=drawer_qar)
         qa_targets = batch['qa_targets']
         qar_targets = batch['qar_targets']
-        qids = batch['qids']
-        scores = scores.view(len(qids), -1)
-        vcr_qa_loss = F.cross_entropy(
-                scores[:, :4], qa_targets.squeeze(-1), reduction="sum")
-        if scores.shape[1] > 8:
-            qar_scores = []
-            for batch_id in range(scores.shape[0]):
-                answer_ind = qa_targets[batch_id].item()
-                qar_index = [4+answer_ind*4+i
-                             for i in range(4)]
-                qar_scores.append(scores[batch_id, qar_index])
-            qar_scores = torch.stack(qar_scores, dim=0)
-        else:
-            qar_scores = scores[:, 4:]
+
+        # scores = scores.view(len(qids), -1)
+        scores1 = scores1.view(len(qids), 4)
+        scores2 = scores2.view(len(qids), 4)
+        if align_fn is not None:
+            loss_align, out_align = align_fn(
+                att_qa, att_qa_mask, qa_targets.squeeze(-1),
+                att_qar, att_qar_mask, qar_targets.squeeze(-1),
+                record=True
+            )
+        vcr_qa_loss = F.cross_entropy(scores1, qa_targets.squeeze(-1), reduction="sum")
+        # vcr_qa_loss = F.cross_entropy(
+                # scores[:, :4], qa_targets.squeeze(-1), reduction="sum")
+        # if scores.shape[1] > 8:
+        #     qar_scores = []
+        #     for batch_id in range(scores.shape[0]):
+        #         answer_ind = qa_targets[batch_id].item()
+        #         qar_index = [4+answer_ind*4+i
+        #                      for i in range(4)]
+        #         qar_scores.append(scores[batch_id, qar_index])
+        #     qar_scores = torch.stack(qar_scores, dim=0)
+        # else:
+        #     qar_scores = scores[:, 4:]
+        # vcr_qar_loss = F.cross_entropy(
+        #     qar_scores, qar_targets.squeeze(-1), reduction="sum")
         vcr_qar_loss = F.cross_entropy(
-            qar_scores, qar_targets.squeeze(-1), reduction="sum")
+            scores2, qar_targets.squeeze(-1), reduction="sum")
         val_qa_loss += vcr_qa_loss.item()
         val_qar_loss += vcr_qar_loss.item()
         curr_qa_score, curr_qar_score, curr_score = compute_accuracies(
-            scores[:, :4], qa_targets, qar_scores, qar_targets)
+            scores1, qa_targets, scores2, qar_targets)
+        # curr_qa_score, curr_qar_score, curr_score = compute_accuracies(
+        #     scores[:, :4], qa_targets, qar_scores, qar_targets)
         tot_qar_score += curr_qar_score
         tot_qa_score += curr_qa_score
         tot_score += curr_score
-        for qid, score in zip(qids, scores):
-            results[qid] = score.cpu().tolist()
+        # for qid, score in zip(qids, scores):
+        #     results[qid] = score.cpu().tolist()
+        for qid, score1, score2 in zip(qids, scores1, scores2):
+            results[qid] = score1.cpu().tolist() + score2.cpu().tolist()
         n_ex += len(qids)
         val_pbar.update(1)
     val_qa_loss = sum(all_gather_list(val_qa_loss))
@@ -389,10 +490,19 @@ def validate(model, val_loader):
                'valid/acc': val_acc,
                'valid/ex_per_s': n_ex/tot_time}
     model.train()
+    align_str = ''
+    for key, value in align_fn.get_metrics(True).items():
+        if 'acc' in key:
+            align_str += f'{key}: {value*100:.2f};'
+        else:
+            align_str += f'{key}: {value:.2f};'
     LOGGER.info(f"validation finished in {int(tot_time)} seconds, "
                 f"score_qa: {val_qa_acc*100:.2f} "
                 f"score_qar: {val_qar_acc*100:.2f} "
-                f"score: {val_acc*100:.2f} ")
+                f"score: {val_acc*100:.2f} "
+                f"loss_qa: {val_qa_loss:.2f} "
+                f"loss_qar: {val_qar_loss:.2f} "
+                f"{align_str}")
     return val_log, results
 
 
