@@ -1,0 +1,17 @@
+{
+    "annotations": [
+        "/storage/raw_data/VCR/vcr1annots/val.jsonl"
+    ],
+    "output": "/storage/TXT_DB_lmdb/vcr_val_w_obj_ids_base-cased.db/",
+    "format": "lmdb",
+    "task": "vcr",
+    "bert": "bert-base-cased",
+    "UNK": 100,
+    "CLS": 101,
+    "SEP": 102,
+    "MASK": 103,
+    "v_range": [
+        106,
+        28996
+    ]
+}
