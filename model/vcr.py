@@ -6,6 +6,7 @@ Uniter for VCR model
 """
 from collections import defaultdict
 
+import torch
 from torch import nn
 from torch.nn import functional as F
 from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
@@ -20,6 +21,8 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
     """
     def __init__(self, config, img_dim):
         super().__init__(config, img_dim)
+        self.layer_weights = nn.Parameter(torch.randn(config.num_hidden_layers))
+        self.head_weights = nn.Parameter(torch.randn(config.num_attention_heads))
         self.uniter = UniterModel(config, img_dim)
         self.vcr_output = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size*2),
@@ -49,7 +52,7 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
         new_emb.weight.data[:orig_word_num, :].copy_(emb)
         self.uniter.embeddings.word_embeddings = new_emb
 
-    def forward(self, batch, compute_loss=True, output_attention=False, draw_attention=None):
+    def forward(self, batch, compute_loss=True, output_attention=False, draw_attention=None, logitorprob='probs'):
         batch = defaultdict(lambda: None, batch)
         input_ids = batch['input_ids']
         position_ids = batch['position_ids']
@@ -58,20 +61,17 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
         attn_masks = batch['attn_masks']
         gather_index = batch['gather_index']
         txt_type_ids = batch['txt_type_ids']
+        sequence_output = self.uniter(input_ids, position_ids,
+                                      img_feat, img_pos_feat,
+                                      attn_masks, gather_index,
+                                      output_all_encoded_layers=False,
+                                      txt_type_ids=txt_type_ids,
+                                      output_attention=output_attention, logitorprob=logitorprob, draw_attention=draw_attention)
         if output_attention:
-            sequence_output, attention_dict, attention_mask = self.uniter(input_ids, position_ids,
-                                                                          img_feat, img_pos_feat,
-                                                                          attn_masks, gather_index,
-                                                                          output_all_encoded_layers=False,
-                                                                          txt_type_ids=txt_type_ids,
-                                                                          output_attention=True,
-                                                                          draw_attention=draw_attention)
+            sequence_output, cls_att_dict, box_mask = sequence_output
         else:
-            sequence_output = self.uniter(input_ids, position_ids,
-                                          img_feat, img_pos_feat,
-                                          attn_masks, gather_index,
-                                          output_all_encoded_layers=False,
-                                          txt_type_ids=txt_type_ids)
+            sequence_output = sequence_output
+
         pooled_output = self.uniter.pooler(sequence_output)
         rank_scores = self.vcr_output(pooled_output)
 
@@ -81,10 +81,11 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
                     rank_scores, targets.squeeze(-1),
                     reduction='mean')
             if output_attention:
-                return vcr_loss, attention_dict, attention_mask
+                # return vcr_loss, rank_scores[:, 1:], cls_att_dict, box_mask
+                return vcr_loss, cls_att_dict, box_mask
             return vcr_loss
         else:
             rank_scores = rank_scores[:, 1:]
             if output_attention:
-                return rank_scores, attention_dict, attention_mask
+                return rank_scores, cls_att_dict, box_mask
             return rank_scores

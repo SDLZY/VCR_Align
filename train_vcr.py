@@ -233,6 +233,7 @@ def main(opts):
     optimizer.step()
     while True:
         for step, batch in enumerate(train_dataloader):
+            import pdb; pdb.set_trace()
             n_examples += batch['input_ids'].size(0)
 
             loss = model(batch, compute_loss=True)

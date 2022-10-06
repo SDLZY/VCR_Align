@@ -125,13 +125,13 @@ class BertAttention(nn.Module):
         self.output = BertSelfOutput(config)
 
     def forward(self, input_tensor, attention_mask, output_attention=False):
+        self_output = self.self(input_tensor, attention_mask, output_attention=output_attention)
         if output_attention:
-            self_output, attention_dict = self.self(input_tensor, attention_mask, output_attention=True)
-            attention_output = self.output(self_output, input_tensor)
+            self_output, attention_dict = self_output
+        attention_output = self.output(self_output, input_tensor)
+        if output_attention:
             return attention_output, attention_dict
         else:
-            self_output = self.self(input_tensor, attention_mask)
-            attention_output = self.output(self_output, input_tensor)
             return attention_output
 
 
@@ -172,10 +172,9 @@ class BertLayer(nn.Module):
         self.output = BertOutput(config)
 
     def forward(self, hidden_states, attention_mask, output_attention=False):
+        attention_output = self.attention(hidden_states, attention_mask, output_attention=output_attention)
         if output_attention:
-            attention_output, attention_dict = self.attention(hidden_states, attention_mask, output_attention=True)
-        else:
-            attention_output = self.attention(hidden_states, attention_mask)
+            attention_output, attention_dict = attention_output
         intermediate_output = self.intermediate(attention_output)
         layer_output = self.output(intermediate_output, attention_output)
         if output_attention:

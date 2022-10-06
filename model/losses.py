@@ -331,44 +331,47 @@ class AlignLoss(nn.Module):
         self.loss2 = dict((layer, 0.) for layer in layers)
         self.count = 0
         self.per_head = per_head
+        assert self.per_head, 'Not Implement'
 
     def forward(self, att1_list: Dict[int, torch.Tensor], att1_mask: torch.Tensor, target1: torch.Tensor,
                 att2_list: Dict[int, torch.Tensor], att2_mask: torch.Tensor, target2: torch.Tensor, record=False):
         """att shape (bs, 4, head, n_obj); target is in ce format"""
         output_dict = {}
         loss = 0
-        bs = att1_mask.shape[0]
-        if not self.per_head:
-            att1_mask = att1_mask.view(bs, 4, -1)
-            att2_mask = att2_mask.view(bs, 4, -1)
+        bs, _, nheads, _ = att1_list[0].shape
+        # bs = att1_mask.shape[0]
+        att1_list = {key: att.permute(0, 2, 1, 3).contiguous().view(bs*nheads, 4, -1) for key, att in att1_list.items()}
+        att2_list = {key: att.permute(0, 2, 1, 3).contiguous().view(bs*nheads, 4, -1) for key, att in att2_list.items()}
+        att1_mask = att1_mask.permute(0, 2, 1, 3).contiguous().view((bs*nheads, 4, -1))
+        att2_mask = att2_mask.permute(0, 2, 1, 3).contiguous().view((bs*nheads, 4, -1))
+        target1 = target1.view(-1, 1).repeat(1, nheads).view(-1)
+        target2 = target2.view(-1, 1).repeat(1, nheads).view(-1)
+        losses = []
         for layer in self.layers:
             att1 = att1_list[layer]
             att2 = att2_list[layer]
-            if not self.per_head:
-                att1 = att1.view(bs, 4, -1)  # head layer
-                att2 = att2.view(bs, 4, -1)
-            att1_gt = att1[torch.arange(bs), target1.long(), None]
-            att2_gt = att2[torch.arange(bs), target2.long(), None]
-
+            att1_gt = att1[torch.arange(bs*nheads), target1.long(), None]  # (bs, 1, head x seq) 或 (bs, 1, head, seq）
+            att2_gt = att2[torch.arange(bs*nheads), target2.long(), None]
             sim1 = self.sim_fn(att1, att1_mask, att2_gt, att2_mask[:, [0]], target1).squeeze(-1)
             sim2 = self.sim_fn(att2, att2_mask, att1_gt, att1_mask[:, [0]], target2).squeeze(-1)
-
-            loss1 = self.loss_fn(sim1, target1)
-            loss2 = self.loss_fn(sim2, target2)
-
-            loss += (loss1 + loss2)/2
-            output_dict[f'loss1_{layer}'] = loss1.item()
-            output_dict[f'loss2_{layer}'] = loss2.item()
-            output_dict[f'acc1_{layer}'] = (sim1.argmax(-1) == target1).float().mean().item()
-            output_dict[f'acc2_{layer}'] = (sim2.argmax(-1) == target2).float().mean().item()
-            if record:
-                self.loss1[layer] += output_dict[f'loss1_{layer}'] * bs
-                self.loss2[layer] += output_dict[f'loss2_{layer}'] * bs
-                self.acc1[layer] += output_dict[f'acc1_{layer}'] * bs
-                self.acc2[layer] += output_dict[f'acc2_{layer}'] * bs
-        if record:
-            self.count += bs
-        loss /= len(self.layers)
+            loss1 = self.loss_fn(sim1, target1).view(bs, nheads)
+            loss2 = self.loss_fn(sim2, target2).view(bs, nheads)
+            loss = (loss1 + loss2) / 2
+            # loss += (loss1 + loss2)/2
+            losses.append(loss)
+            # output_dict[f'loss1_{layer}'] = loss1.item()
+            # output_dict[f'loss2_{layer}'] = loss2.item()
+            # output_dict[f'acc1_{layer}'] = (sim1.argmax(-1) == target1).float().mean().item()
+            # output_dict[f'acc2_{layer}'] = (sim2.argmax(-1) == target2).float().mean().item()
+            # if record:
+            #     self.loss1[layer] += output_dict[f'loss1_{layer}'] * bs
+            #     self.loss2[layer] += output_dict[f'loss2_{layer}'] * bs
+            #     self.acc1[layer] += output_dict[f'acc1_{layer}'] * bs
+            #     self.acc2[layer] += output_dict[f'acc2_{layer}'] * bs
+        # if record:
+        #     self.count += bs
+        # loss /= len(self.layers)
+        loss = torch.stack(losses, dim=0)
         return loss, output_dict
 
     def reset(self):
@@ -541,6 +544,33 @@ class CosineEmbeddingAlignLoss4(nn.Module):
         return metrics
 
 
+class AlignL1Loss(nn.Module):
+    def __init__(self, layers):
+        super().__init__()
+        self.layers = layers
+        self._loss = nn.L1Loss(reduction='none')
+
+    def forward(self, att1_list: Dict[int, torch.Tensor], att1_mask: torch.Tensor, target1: torch.Tensor,
+                att2_list: Dict[int, torch.Tensor], att2_mask: torch.Tensor, target2: torch.Tensor, record=False):
+        bs, _, nheads, _ = att1_list[0].shape
+        att1_list = {key: att.permute(0, 2, 1, 3).contiguous().view(bs*nheads, 4, -1) for key, att in att1_list.items()}
+        att2_list = {key: att.permute(0, 2, 1, 3).contiguous().view(bs*nheads, 4, -1) for key, att in att2_list.items()}
+        att1_mask = att1_mask.permute(0, 2, 1, 3).contiguous().view((bs*nheads, 4, -1))
+        att2_mask = att2_mask.permute(0, 2, 1, 3).contiguous().view((bs*nheads, 4, -1))
+        target1 = target1.view(-1, 1).repeat(1, nheads).view(-1)
+        target2 = target2.view(-1, 1).repeat(1, nheads).view(-1)
+        losses = []
+        for layer in self.layers:
+            att1 = att1_list[layer]
+            att2 = att2_list[layer]
+            att1_gt = att1[torch.arange(bs*nheads), target1.long()] * att1_mask[:, 0].float()
+            att2_gt = att2[torch.arange(bs*nheads), target2.long()] * att2_mask[:, 0].float()
+            loss = self._loss(att1_gt, att2_gt).sum(-1) / att1_mask[:, 0].sum(-1).float()
+            losses.append(loss.view(bs, nheads))
+        loss = torch.stack(losses, dim=1)
+        return loss, None
+
+
 SIMILARITY_FUNCTIONS = {
     'inner_product': InnerProduct, 'cosine': CosineSimilarity, 'cosface': AddMarginProduct, 'arcface': ArcMarginProduct,
     'apprank': AppRank, 'listmle': ListMLE, 'spearman': Spearman,
@@ -548,7 +578,7 @@ SIMILARITY_FUNCTIONS = {
 }
 LOSS_FUNCTIONS = {'ce': nn.CrossEntropyLoss, 'mrl': MarginRankingLoss, 'embed': EmbeddingLoss,
                   'bce': BinaryCrossEntropyLoss, 'focal': FocalLoss}
-ALIGN_MODELS = {'align4': AlignLoss, 'align16': AlignLoss16, 'cosembedding4': CosineEmbeddingAlignLoss4}
+ALIGN_MODELS = {'align4': AlignLoss, 'align16': AlignLoss16, 'cosembedding4': CosineEmbeddingAlignLoss4, 'l1_loss': AlignL1Loss}
 
 
 def get_align_model(model_params, sim_fn_params=None, loss_fn_params=None):
@@ -560,7 +590,7 @@ def get_align_model(model_params, sim_fn_params=None, loss_fn_params=None):
     loss_fn = None
     if loss_fn_params:
         loss_fn = LOSS_FUNCTIONS[loss_fn_params.pop('name')](**loss_fn_params)
-    if model_name in ('cosembedding4', ):
+    if model_name in ('cosembedding4', 'l1_loss'):
         model = align_model(**model_params)
     else:
         model = align_model(sim_fn=sim_fn, loss_fn=loss_fn, **model_params)

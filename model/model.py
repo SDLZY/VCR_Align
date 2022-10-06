@@ -285,7 +285,7 @@ class UniterEncoder(nn.Module):
         all_encoder_layers = []
         all_attention_list = []
         hidden_states = input_
-        for layer_module in self.layer[:-1]:
+        for layer_module in self.layer:
             layer_output = layer_module(hidden_states, attention_mask, output_attention=output_attention)
             if output_attention:
                 hidden_states, attention_dict = layer_output
@@ -294,18 +294,6 @@ class UniterEncoder(nn.Module):
                 hidden_states = layer_output
             if output_all_encoded_layers:
                 all_encoder_layers.append(hidden_states)
-        # 最后一层
-        if last_attention_mask is None:
-            last_attention_mask = attention_mask
-        layer_output = self.layer[-1](hidden_states, last_attention_mask, output_attention=output_attention)
-        if output_attention:
-            hidden_states, attention_dict = layer_output
-            all_attention_list.append(attention_dict)
-        else:
-            hidden_states = layer_output
-        if output_all_encoded_layers:
-            all_encoder_layers.append(hidden_states)
-
         if not output_all_encoded_layers:
             all_encoder_layers.append(hidden_states)
         if output_attention:
@@ -359,7 +347,7 @@ class UniterModel(UniterPreTrainedModel):
                 attention_mask, gather_index=None, img_masks=None,
                 output_all_encoded_layers=True,
                 txt_type_ids=None, img_type_ids=None,
-                output_attention=False, draw_attention=None):
+                output_attention=False, logitorprob='probs', draw_attention=None):
         # compute self-attention mask
         extended_attention_mask = attention_mask.unsqueeze(1).unsqueeze(2)
         extended_attention_mask = extended_attention_mask.to(
@@ -381,47 +369,34 @@ class UniterModel(UniterPreTrainedModel):
                 img_feat, img_pos_feat,
                 gather_index, img_masks, txt_type_ids, img_type_ids)
 
-        num_txt_tokens = ((gather_index[:, :] < input_ids.shape[1]).long() * attention_mask).sum(-1)
-        last_extended_attention_mask = extended_attention_mask.clone().repeat(1, 1, extended_attention_mask.shape[-1], 1)
-        for i, n in enumerate(num_txt_tokens):
-           last_extended_attention_mask[i, :, 0, :n] -= 10000.0
+        output_encoded_layers = self.encoder(
+            embedding_output, extended_attention_mask,
+            output_all_encoded_layers=output_all_encoded_layers, output_attention=output_attention)
+
         if output_attention:
-            encoded_layers, all_attention_list = self.encoder(
-                embedding_output,
-                # extended_attention_mask,
-                last_extended_attention_mask,
-                output_all_encoded_layers=output_all_encoded_layers, output_attention=True,
-                # last_attention_mask=last_extended_attention_mask
-            )
+            encoded_layers, all_attention_list = output_encoded_layers
+            sequence_object_mask_ = (gather_index[:, :] < input_ids.shape[1]).long() * attention_mask
+            sequence_object_mask = attention_mask - sequence_object_mask_
+            num_obj_tokens = sequence_object_mask.sum(-1)
+            box_mask = sequence_object_mask.new_zeros((sequence_object_mask.shape[0], num_obj_tokens.max()))
+            for i, n in enumerate(num_obj_tokens):
+                box_mask[i, :n] += 1
+            cls_att_dict = {}
+            for layer in range(len(all_attention_list)):
+                cls_attention = all_attention_list[layer][logitorprob][:, :, 0]
+                bs, num_heads, _ = cls_attention.shape
+                cls_attention_new = cls_attention.new_zeros((bs, num_heads, box_mask.shape[-1]))
+                if logitorprob == 'scores':
+                    cls_attention_new = cls_attention_new.fill_(-1e+04)
+                cls_attention_new[box_mask.unsqueeze(1).repeat(1, num_heads, 1)>0] = cls_attention[sequence_object_mask.unsqueeze(1).repeat(1, num_heads, 1)>0]
+                # if logitorprob == 'scores':
+                #     cls_attention_new = nn.Softmax(dim=-1)(cls_attention_new)
+                cls_att_dict[layer] = cls_attention_new.view(bs // 4, 4, num_heads, -1)
+            box_mask = box_mask.unsqueeze(1).repeat(1, num_heads, 1).view(bs//4, 4, num_heads, -1)
         else:
-            encoded_layers = self.encoder(
-                embedding_output,
-                # extended_attention_mask,
-                last_extended_attention_mask,
-                output_all_encoded_layers=output_all_encoded_layers,
-                # last_attention_mask=last_extended_attention_mask
-            )
+            encoded_layers = output_encoded_layers
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
         if output_attention:
-            # num_tokens = (extended_attention_mask.squeeze(1).squeeze(1) == 0).sum(-1)
-            # num_txt_tokens = ((gather_index[:, :] < input_ids.shape[1]).long() * attention_mask).sum(-1)
-            if draw_attention is not None:
-                draw_attention(all_attention_list, attention_mask, num_txt_tokens)
-            img_mask = attention_mask.clone()
-            for i, n in enumerate(num_txt_tokens):
-                img_mask[i, :n] = 0
-            img_mask_new = img_mask.new_zeros((img_mask.shape[0], img_mask.sum(-1).max()))
-            for i in range(len(num_txt_tokens)):
-                img_mask_new[i, :img_mask[i].sum().item()] = 1
-            cls_att_dict = {}
-            for layer in range(12):
-                cls_attention = all_attention_list[layer]['scores'][:, :, 0]
-                bs, num_heads, _ = cls_attention.shape
-                cls_attention_new = cls_attention.new_zeros((bs, num_heads, img_mask_new.shape[-1]))
-                cls_attention_new[img_mask_new.unsqueeze(1).repeat(1, num_heads, 1) > 0] = cls_attention[
-                    img_mask.unsqueeze(1).repeat(1, num_heads, 1) > 0]
-                cls_att_dict[layer] = cls_attention_new.view(bs//4, 4, num_heads, -1)
-            img_mask_new = img_mask_new.unsqueeze(1).repeat(1, num_heads, 1).view(bs//4, 4, num_heads, -1)
-            return encoded_layers, cls_att_dict, img_mask_new
+            return encoded_layers, cls_att_dict, box_mask
         return encoded_layers

@@ -38,11 +38,11 @@ from model.losses import get_align_model
 import numpy as np
 
 import cytoolz
-
-from utils.visualize import get_attention_drawer
-
-NUM_SPECIAL_TOKENS = 81
-
+import copy
+import shutil
+import copy
+torch.set_printoptions(threshold=np.inf, linewidth=1000000)
+logitorprob='scores'
 
 def build_dataloader(dataset, collate_fn, is_train, opts):
     batch_size = (opts.train_batch_size if is_train
@@ -254,6 +254,9 @@ def main(opts):
         os.makedirs(join(opts.output_dir, 'results'))  # store VQA predictions
         os.makedirs(join(opts.output_dir, 'figures'))  # store VQA predictions
         add_log_to_file(join(opts.output_dir, 'log', 'log.txt'))
+        os.makedirs(join(opts.output_dir, 'codes'))    # 把核心修改代码保存下来，以备后来寻找bug
+        shutil.copytree('./model', join(opts.output_dir, 'codes', 'model'))
+        shutil.copy('train_vcr_align.py', join(opts.output_dir, 'codes/'))
     else:
         LOGGER.disabled = True
         pbar = NoOp()
@@ -269,11 +272,17 @@ def main(opts):
     # align_fn = AlignLoss(sim_fn='spearman', loss_fn='mrl', layers=(11,), per_head=True)
     # align_fn = AlignLoss(sim_fn='arcface', layers=(11,))
     # align_fn = AlignLoss(sim_fn='arcface', layers=list(range(12)))
-    align_fn = get_align_model(
-        model_params={'name': 'align4', 'layers': (11, ), 'per_head': True},
-        sim_fn_params={'name': 'spearman'},
-        loss_fn_params={'name': 'mrl', 'margin': 0.2}
-    )
+    # align_fn = get_align_model(
+    #     model_params={'name': 'align4', 'layers': (11, ), 'per_head': True},
+    #     sim_fn_params={'name': 'spearman'},
+    #     loss_fn_params={'name': 'mrl', 'margin': 0.2}
+    # )
+    # align_fn = get_align_model(
+    #     model_params={'name': 'align4', 'layers': (11, ), 'per_head': True},
+    #     sim_fn_params={'name': 'arcface'},
+    #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
+    # )
+    align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
 
     running_loss = RunningMeter('loss')
     running_loss_align = RunningMeter('loss_align')
@@ -288,18 +297,24 @@ def main(opts):
         for step, (batch_qa, batch_qar) in enumerate(zip(train_dataloader_qa, train_dataloader_qar)):
             n_examples += batch_qa['input_ids'].size(0)
 
-            loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True)
+            loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True, logitorprob='scores')
             loss_qa = loss_qa.mean()
 
-            loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True)
+            loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True, logitorprob='scores')
             loss_qar = loss_qar.mean()
 
             loss_align, out_align = align_fn(
                 att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
                 att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
             )
+            # loss_align = loss_align * F.sigmoid(model.layer_weights.float()).view(1, -1, 1) * F.sigmoid(model.head_weights.float()).view(1, 1, -1)
+            loss_align = loss_align.mean()
+            loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
+            # loss_align = loss_align.mean()
 
-            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align*0.05
+            # loss = loss_qa*0.5 + loss_qar*0.5
+            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
+            # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
             delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
             with amp.scale_loss(loss, optimizer, delay_unscale=delay_unscale
                                 ) as scaled_loss:
@@ -316,6 +331,7 @@ def main(opts):
             running_loss_align(loss_align.item())
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
+                print(loss_qa.item(), loss_qar.item(), loss_align.item(), loss_reg.item())
                 global_step += 1
 
                 # learning rate scheduling
@@ -421,10 +437,11 @@ def validate(model, val_loader, align_fn=None, visualize=False):
         # scores = model(batch, compute_loss=False)
         drawer_qa = None
         drawer_qar = None
-        if visualize and n_ex % 1000 == 0:
-            dirname = os.path.join(LOGGER.handlers[0].baseFilename[:-12], 'figures')
-            drawer_qa = get_attention_drawer(os.path.join(dirname, f'attention_map_qa_{n_ex}.png'))
-            drawer_qar = get_attention_drawer(os.path.join(dirname, f'attention_map_qar_{n_ex}.png'))
+        # if visualize and n_ex % 1000 == 0:
+        # from utils.visualize import get_attention_drawer
+        #     dirname = os.path.join(LOGGER.handlers[0].baseFilename[:-12], 'figures')
+        #     drawer_qa = get_attention_drawer(os.path.join(dirname, f'attention_map_qa_{n_ex}.png'))
+        #     drawer_qar = get_attention_drawer(os.path.join(dirname, f'attention_map_qar_{n_ex}.png'))
         scores1, att_qa, att_qa_mask = model(batch_qa, compute_loss=False, output_attention=True, draw_attention=drawer_qa)
         scores2, att_qar, att_qar_mask = model(batch_qar, compute_loss=False, output_attention=True, draw_attention=drawer_qar)
         qa_targets = batch['qa_targets']
@@ -433,13 +450,14 @@ def validate(model, val_loader, align_fn=None, visualize=False):
         # scores = scores.view(len(qids), -1)
         scores1 = scores1.view(len(qids), 4)
         scores2 = scores2.view(len(qids), 4)
-        if align_fn is not None:
-            loss_align, out_align = align_fn(
-                att_qa, att_qa_mask, qa_targets.squeeze(-1),
-                att_qar, att_qar_mask, qar_targets.squeeze(-1),
-                record=True
-            )
-        vcr_qa_loss = F.cross_entropy(scores1, qa_targets.squeeze(-1), reduction="sum")
+        # if align_fn is not None:
+        loss_align, out_align = align_fn(
+            att_qa, att_qa_mask, qa_targets.squeeze(-1),
+            att_qar, att_qar_mask, qar_targets.squeeze(-1),
+            record=True
+        )
+        vcr_qa_loss = F.cross_entropy(
+            scores1, qa_targets.squeeze(-1), reduction="sum")
         # vcr_qa_loss = F.cross_entropy(
                 # scores[:, :4], qa_targets.squeeze(-1), reduction="sum")
         # if scores.shape[1] > 8:
@@ -491,11 +509,13 @@ def validate(model, val_loader, align_fn=None, visualize=False):
                'valid/ex_per_s': n_ex/tot_time}
     model.train()
     align_str = ''
-    for key, value in align_fn.get_metrics(True).items():
-        if 'acc' in key:
-            align_str += f'{key}: {value*100:.2f};'
-        else:
-            align_str += f'{key}: {value:.2f};'
+
+    # if align_fn is not None:
+    #     for key, value in align_fn.get_metrics(True).items():
+    #         if 'acc' in key:
+    #             align_str += f'{key}: {value*100:.2f};'
+    #         else:
+    #             align_str += f'{key}: {value:.2f};'
     LOGGER.info(f"validation finished in {int(tot_time)} seconds, "
                 f"score_qa: {val_qa_acc*100:.2f} "
                 f"score_qar: {val_qar_acc*100:.2f} "
@@ -585,6 +605,8 @@ if __name__ == "__main__":
     parser.add_argument('--pin_mem', action='store_true', help="pin memory")
 
     # can use config files
+    parser.add_argument('--alpha', help='weight of align loss')
+    parser.add_argument('--gamma', help='weight of align coefficient')
     parser.add_argument('--config', help='JSON config files')
 
     args = parse_with_config(parser)
