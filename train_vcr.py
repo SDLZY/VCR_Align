@@ -233,9 +233,13 @@ def main(opts):
     optimizer.step()
     while True:
         for step, batch in enumerate(train_dataloader):
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             n_examples += batch['input_ids'].size(0)
-
+            with open('example_ids_in_training_base.txt', 'a') as fp:
+                for ex_id in batch['example_ids'][::4]:
+                    fp.write(ex_id)
+                    fp.write(' ')
+                fp.write('\n')
             loss = model(batch, compute_loss=True)
             loss = loss.mean()
             delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0

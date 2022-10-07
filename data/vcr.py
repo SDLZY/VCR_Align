@@ -125,6 +125,7 @@ class VcrDataset(VcrDetectFeatTxtTokDataset):
          [txt, img2]]
         """
         example = super().__getitem__(i)
+        # import pdb; pdb.set_trace()
         img_feat, img_pos_feat, num_bb = self._get_img_feat(
             example['img_fname'][0], example['img_fname'][1])
         input_ids_q, input_ids_for_choices, type_ids_q = self._get_input_ids(
@@ -155,14 +156,14 @@ class VcrDataset(VcrDetectFeatTxtTokDataset):
             outs.append(
                 (input_ids, txt_type_ids,
                  img_feat, img_pos_feat,
-                 attn_masks, target))
+                 attn_masks, target, self.ids[i]+'-'+self.task))
 
         return tuple(outs)
 
 
 def vcr_collate(inputs):
     (input_ids, txt_type_ids, img_feats,
-     img_pos_feats, attn_masks, targets) = map(list, unzip(concat(inputs)))
+     img_pos_feats, attn_masks, targets, ids) = map(list, unzip(concat(inputs)))
 
     txt_lens = [i.size(0) for i in input_ids]
     input_ids = pad_sequence(input_ids, batch_first=True, padding_value=0)
@@ -190,7 +191,8 @@ def vcr_collate(inputs):
              'img_pos_feat': img_pos_feat,
              'attn_masks': attn_masks,
              'gather_index': gather_index,
-             'targets': targets}
+             'targets': targets,
+             'example_ids': ids}
     return batch
 
 

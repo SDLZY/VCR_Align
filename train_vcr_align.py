@@ -41,6 +41,7 @@ import cytoolz
 import copy
 import shutil
 import copy
+NUM_SPECIAL_TOKENS = 81
 torch.set_printoptions(threshold=np.inf, linewidth=1000000)
 logitorprob='scores'
 
@@ -295,6 +296,16 @@ def main(opts):
     optimizer.step()
     while True:
         for step, (batch_qa, batch_qar) in enumerate(zip(train_dataloader_qa, train_dataloader_qar)):
+            with open('example_ids_in_training_align_555.txt', 'a') as fp:
+                for ex_id in batch_qa['example_ids'][::4]:
+                    fp.write(ex_id)
+                    fp.write(' ')
+                for ex_id in batch_qar['example_ids'][::4]:
+                    fp.write(ex_id)
+                    fp.write(' ')
+                fp.write('\n')
+            break
+
             n_examples += batch_qa['input_ids'].size(0)
 
             loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True, logitorprob='scores')
@@ -605,8 +616,8 @@ if __name__ == "__main__":
     parser.add_argument('--pin_mem', action='store_true', help="pin memory")
 
     # can use config files
-    parser.add_argument('--alpha', help='weight of align loss')
-    parser.add_argument('--gamma', help='weight of align coefficient')
+    parser.add_argument('--alpha', type=float, default=1.0, help='weight of align loss')
+    parser.add_argument('--gamma', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--config', help='JSON config files')
 
     args = parse_with_config(parser)
