@@ -71,7 +71,7 @@ def build_aligned_dataloader(dataset_qa, dataset_qar, collate_fn, is_train, opts
                                         batch_size=batch_size, droplast=is_train, seed=42)
         sampler_qar = TokenBucketSampler([i + j for i, j in zip(dataset_qa.lens, dataset_qar.lens)],
                                          bucket_size=BUCKET_SIZE,
-                                         batch_size=batch_size, droplast=is_train, seed=43)
+                                         batch_size=batch_size, droplast=is_train, seed=42)
         dataloader_qa = DataLoader(dataset_qa, batch_sampler=sampler_qa,
                                    num_workers=opts.n_workers,
                                    pin_memory=opts.pin_mem, collate_fn=collate_fn)
@@ -342,7 +342,6 @@ def main(opts):
             # running_loss_align(loss_align.item())
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
-                print(loss_qa.item(), loss_qar.item())
                 # print(loss_qa.item(), loss_qar.item(), loss_align.item(), loss_reg.item())
                 global_step += 1
 
