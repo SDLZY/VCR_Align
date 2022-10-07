@@ -71,7 +71,7 @@ def build_aligned_dataloader(dataset_qa, dataset_qar, collate_fn, is_train, opts
                                         batch_size=batch_size, droplast=is_train, seed=42)
         sampler_qar = TokenBucketSampler([i + j for i, j in zip(dataset_qa.lens, dataset_qar.lens)],
                                          bucket_size=BUCKET_SIZE,
-                                         batch_size=batch_size, droplast=is_train, seed=42)
+                                         batch_size=batch_size, droplast=is_train, seed=43)
         dataloader_qa = DataLoader(dataset_qa, batch_sampler=sampler_qa,
                                    num_workers=opts.n_workers,
                                    pin_memory=opts.pin_mem, collate_fn=collate_fn)
@@ -270,6 +270,7 @@ def main(opts):
     LOGGER.info("  Accumulate steps = %d", opts.gradient_accumulation_steps)
     LOGGER.info("  Num steps = %d", opts.num_train_steps)
 
+    align_fn = None
     # align_fn = AlignLoss(sim_fn='spearman', loss_fn='mrl', layers=(11,), per_head=True)
     # align_fn = AlignLoss(sim_fn='arcface', layers=(11,))
     # align_fn = AlignLoss(sim_fn='arcface', layers=list(range(12)))
@@ -283,7 +284,7 @@ def main(opts):
     #     sim_fn_params={'name': 'arcface'},
     #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
     # )
-    align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
 
     running_loss = RunningMeter('loss')
     running_loss_align = RunningMeter('loss_align')
@@ -296,15 +297,14 @@ def main(opts):
     optimizer.step()
     while True:
         for step, (batch_qa, batch_qar) in enumerate(zip(train_dataloader_qa, train_dataloader_qar)):
-            with open('example_ids_in_training_align_555.txt', 'a') as fp:
-                for ex_id in batch_qa['example_ids'][::4]:
-                    fp.write(ex_id)
-                    fp.write(' ')
-                for ex_id in batch_qar['example_ids'][::4]:
-                    fp.write(ex_id)
-                    fp.write(' ')
-                fp.write('\n')
-            break
+            # with open('example_ids_in_training_align_666.txt', 'a') as fp:
+            #     for ex_id in batch_qa['example_ids'][::4]:
+            #         fp.write(ex_id)
+            #         fp.write(' ')
+            #     for ex_id in batch_qar['example_ids'][::4]:
+            #         fp.write(ex_id)
+            #         fp.write(' ')
+            #     fp.write('\n')
 
             n_examples += batch_qa['input_ids'].size(0)
 
@@ -314,17 +314,17 @@ def main(opts):
             loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True, logitorprob='scores')
             loss_qar = loss_qar.mean()
 
-            loss_align, out_align = align_fn(
-                att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
-                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
-            )
+            # loss_align, out_align = align_fn(
+            #     att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
+            #     att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
+            # )
             # loss_align = loss_align * F.sigmoid(model.layer_weights.float()).view(1, -1, 1) * F.sigmoid(model.head_weights.float()).view(1, 1, -1)
-            loss_align = loss_align.mean()
-            loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
+            # loss_align = loss_align.mean()
+            # loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
             # loss_align = loss_align.mean()
 
-            # loss = loss_qa*0.5 + loss_qar*0.5
-            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
+            loss = loss_qa*0.5 + loss_qar*0.5
+            # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
             # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
             delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
             with amp.scale_loss(loss, optimizer, delay_unscale=delay_unscale
@@ -339,10 +339,11 @@ def main(opts):
                     all_reduce_and_rescale_tensors(grads, float(1))
 
             running_loss(loss.item())
-            running_loss_align(loss_align.item())
+            # running_loss_align(loss_align.item())
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
-                print(loss_qa.item(), loss_qar.item(), loss_align.item(), loss_reg.item())
+                print(loss_qa.item(), loss_qar.item())
+                # print(loss_qa.item(), loss_qar.item(), loss_align.item(), loss_reg.item())
                 global_step += 1
 
                 # learning rate scheduling
@@ -359,7 +360,7 @@ def main(opts):
                 # log loss
                 # NOTE: not gathered across GPUs for efficiency
                 TB_LOGGER.add_scalar('loss', running_loss.val, global_step)
-                TB_LOGGER.add_scalar('loss_align', running_loss_align.val, global_step)
+                # TB_LOGGER.add_scalar('loss_align', running_loss_align.val, global_step)
                 TB_LOGGER.step()
 
                 # update model params
@@ -461,12 +462,12 @@ def validate(model, val_loader, align_fn=None, visualize=False):
         # scores = scores.view(len(qids), -1)
         scores1 = scores1.view(len(qids), 4)
         scores2 = scores2.view(len(qids), 4)
-        # if align_fn is not None:
-        loss_align, out_align = align_fn(
-            att_qa, att_qa_mask, qa_targets.squeeze(-1),
-            att_qar, att_qar_mask, qar_targets.squeeze(-1),
-            record=True
-        )
+        if align_fn is not None:
+            loss_align, out_align = align_fn(
+                att_qa, att_qa_mask, qa_targets.squeeze(-1),
+                att_qar, att_qar_mask, qar_targets.squeeze(-1),
+                record=True
+            )
         vcr_qa_loss = F.cross_entropy(
             scores1, qa_targets.squeeze(-1), reduction="sum")
         # vcr_qa_loss = F.cross_entropy(
