@@ -270,7 +270,7 @@ def main(opts):
     LOGGER.info("  Accumulate steps = %d", opts.gradient_accumulation_steps)
     LOGGER.info("  Num steps = %d", opts.num_train_steps)
 
-    align_fn = None
+    # align_fn = None
     # align_fn = AlignLoss(sim_fn='spearman', loss_fn='mrl', layers=(11,), per_head=True)
     # align_fn = AlignLoss(sim_fn='arcface', layers=(11,))
     # align_fn = AlignLoss(sim_fn='arcface', layers=list(range(12)))
@@ -284,7 +284,7 @@ def main(opts):
     #     sim_fn_params={'name': 'arcface'},
     #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
     # )
-    # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
 
     running_loss = RunningMeter('loss')
     running_loss_align = RunningMeter('loss_align')
@@ -314,18 +314,20 @@ def main(opts):
             loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True, logitorprob='scores')
             loss_qar = loss_qar.mean()
 
-            # loss_align, out_align = align_fn(
-            #     att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
-            #     att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
-            # )
-            # loss_align = loss_align * F.sigmoid(model.layer_weights.float()).view(1, -1, 1) * F.sigmoid(model.head_weights.float()).view(1, 1, -1)
-            # loss_align = loss_align.mean()
-            # loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
+            loss_align, out_align = align_fn(
+                att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
+                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
+            )
+            lw = F.sigmoid(model.layer_weights.float())
+            hw = F.sigmoid(model.head_weights.float())
+            loss_align = loss_align * lw.view(1, -1, 1) * hw.view(1, 1, -1)
+            loss_align = loss_align.mean()
+            loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
             # loss_align = loss_align.mean()
 
-            loss = loss_qa*0.5 + loss_qar*0.5
+            # loss = loss_qa*0.5 + loss_qar*0.5
             # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
-            # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
+            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
             delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
             with amp.scale_loss(loss, optimizer, delay_unscale=delay_unscale
                                 ) as scaled_loss:
@@ -339,10 +341,18 @@ def main(opts):
                     all_reduce_and_rescale_tensors(grads, float(1))
 
             running_loss(loss.item())
-            # running_loss_align(loss_align.item())
+            running_loss_align(loss_align.item())
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
-                # print(loss_qa.item(), loss_qar.item(), loss_align.item(), loss_reg.item())
+                with open(os.path.join(args.output_dir, 'align_weight.txt'), 'a') as fp:
+                    fp.write('layer weights')
+                    for i in range(12):
+                        fp.write(f'{lw[i].item()} ')
+                    fp.write('head weights')
+                    for i in range(12):
+                        fp.write(f'{hw[i].item()} ')
+                    fp.write('\n')
+
                 global_step += 1
 
                 # learning rate scheduling
@@ -359,7 +369,7 @@ def main(opts):
                 # log loss
                 # NOTE: not gathered across GPUs for efficiency
                 TB_LOGGER.add_scalar('loss', running_loss.val, global_step)
-                # TB_LOGGER.add_scalar('loss_align', running_loss_align.val, global_step)
+                TB_LOGGER.add_scalar('loss_align', running_loss_align.val, global_step)
                 TB_LOGGER.step()
 
                 # update model params
@@ -428,6 +438,7 @@ def validate(model, val_loader, align_fn=None, visualize=False):
     model.eval()
     val_qa_loss, val_qar_loss = 0, 0
     tot_qa_score, tot_qar_score, tot_score = 0, 0, 0
+    loss_align = 0
     n_ex = 0
     st = time()
     results = {}
@@ -462,11 +473,12 @@ def validate(model, val_loader, align_fn=None, visualize=False):
         scores1 = scores1.view(len(qids), 4)
         scores2 = scores2.view(len(qids), 4)
         if align_fn is not None:
-            loss_align, out_align = align_fn(
+            loss_align_, out_align = align_fn(
                 att_qa, att_qa_mask, qa_targets.squeeze(-1),
                 att_qar, att_qar_mask, qar_targets.squeeze(-1),
                 record=True
             )
+            loss_align += loss_align_.item() * len(qids)
         vcr_qa_loss = F.cross_entropy(
             scores1, qa_targets.squeeze(-1), reduction="sum")
         # vcr_qa_loss = F.cross_entropy(
@@ -512,11 +524,15 @@ def validate(model, val_loader, align_fn=None, visualize=False):
     val_qa_acc = tot_qa_score / n_ex
     val_qar_acc = tot_qar_score / n_ex
     val_acc = tot_score / n_ex
+    if align_fn is not None:
+        loss_align = sum(all_gather_list(loss_align))
+        loss_align /= n_ex
     val_log = {'valid/vcr_qa_loss': val_qa_loss,
                'valid/vcr_qar_loss': val_qar_loss,
                'valid/acc_qa': val_qa_acc,
                'valid/acc_qar': val_qar_acc,
                'valid/acc': val_acc,
+               'valid/align_loss': loss_align,
                'valid/ex_per_s': n_ex/tot_time}
     model.train()
     align_str = ''
@@ -533,6 +549,7 @@ def validate(model, val_loader, align_fn=None, visualize=False):
                 f"score: {val_acc*100:.2f} "
                 f"loss_qa: {val_qa_loss:.2f} "
                 f"loss_qar: {val_qar_loss:.2f} "
+                f"loss_align: {loss_align:.2f}"
                 f"{align_str}")
     return val_log, results
 
