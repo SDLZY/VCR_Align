@@ -38,12 +38,13 @@ from model.losses import get_align_model
 import numpy as np
 
 import cytoolz
+import h5py
 import copy
 import shutil
 import copy
 NUM_SPECIAL_TOKENS = 81
 torch.set_printoptions(threshold=np.inf, linewidth=1000000)
-logitorprob='scores'
+logitorprob='probs'
 
 def build_dataloader(dataset, collate_fn, is_train, opts):
     batch_size = (opts.train_batch_size if is_train
@@ -205,21 +206,17 @@ def main(opts):
         val_final_dataset, vcr_eval_collate,
         False, opts)
 
-    # Prepare model
-    if opts.checkpoint and opts.checkpoint_from == "pretrain":
-        checkpoint = torch.load(opts.checkpoint)
-    else:
-        checkpoint = {}
-
     all_dbs = opts.train_txt_dbs + [opts.val_txt_db]
     toker = json.load(open(f'{all_dbs[0]}/meta.json'))['bert']
     assert all(toker == json.load(open(f'{db}/meta.json'))['bert']
                for db in all_dbs)
     model = UniterForVisualCommonsenseReasoning.from_pretrained(
-        opts.model_config, checkpoint, img_dim=IMG_DIM)
+        opts.model_config, {}, img_dim=IMG_DIM)
     model.init_type_embedding()
     model.init_word_embedding(NUM_SPECIAL_TOKENS)
-    if opts.checkpoint_from == "vcr_pretrain":
+    # if opts.checkpoint_from == "vcr_pretrain":
+    if opts.checkpoint is not None:
+        opts.output_dir = os.path.dirname(opts.checkpoint)
         checkpoint = torch.load(opts.checkpoint)
         state_dict = checkpoint.get('model_state', checkpoint)
         matched_state_dict = {}
@@ -246,174 +243,7 @@ def main(opts):
     optimizer = build_optimizer(model, opts)
     model, optimizer = amp.initialize(model, optimizer,
                                       enabled=opts.fp16, opt_level='O2')
-    global_step = 0
-    if rank == 0:
-        save_training_meta(opts)
-        TB_LOGGER.create(join(opts.output_dir, 'log'))
-        pbar = tqdm(total=opts.num_train_steps)
-        model_saver = ModelSaver(join(opts.output_dir, 'ckpt'))
-        os.makedirs(join(opts.output_dir, 'results'))  # store VQA predictions
-        os.makedirs(join(opts.output_dir, 'figures'))  # store VQA predictions
-        add_log_to_file(join(opts.output_dir, 'log', 'log.txt'))
-        os.makedirs(join(opts.output_dir, 'codes'))    # 把核心修改代码保存下来，以备后来寻找bug
-        shutil.copytree('./model', join(opts.output_dir, 'codes', 'model'))
-        shutil.copy('train_vcr_align.py', join(opts.output_dir, 'codes/'))
-    else:
-        LOGGER.disabled = True
-        pbar = NoOp()
-        model_saver = NoOp()
-
-    LOGGER.info(f"***** Running training with {n_gpu} GPUs *****")
-    assert len(train_dataset_qa) == len(train_dataset_qar), 'Difference size of qa and qar'
-    LOGGER.info("  Num examples = %d", len(train_dataset_qa) * hvd.size())
-    LOGGER.info("  Batch size = %d", opts.train_batch_size)
-    LOGGER.info("  Accumulate steps = %d", opts.gradient_accumulation_steps)
-    LOGGER.info("  Num steps = %d", opts.num_train_steps)
-
-    # align_fn = None
-    # align_fn = AlignLoss(sim_fn='spearman', loss_fn='mrl', layers=(11,), per_head=True)
-    # align_fn = AlignLoss(sim_fn='arcface', layers=(11,))
-    # align_fn = AlignLoss(sim_fn='arcface', layers=list(range(12)))
-    # align_fn = get_align_model(
-    #     model_params={'name': 'align4', 'layers': (11, ), 'per_head': True},
-    #     sim_fn_params={'name': 'spearman'},
-    #     loss_fn_params={'name': 'mrl', 'margin': 0.2}
-    # )
-    # align_fn = get_align_model(
-    #     model_params={'name': 'align4', 'layers': (11, ), 'per_head': True},
-    #     sim_fn_params={'name': 'arcface'},
-    #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
-    # )
-    align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
-
-    running_loss = RunningMeter('loss')
-    running_loss_align = RunningMeter('loss_align')
-    model.train()
-    n_examples = 0
-    n_epoch = 0
-    start = time()
-    # quick hack for amp delay_unscale bug
-    optimizer.zero_grad()
-    optimizer.step()
-    while True:
-        for step, (batch_qa, batch_qar) in enumerate(zip(train_dataloader_qa, train_dataloader_qar)):
-            # with open('example_ids_in_training_align_666.txt', 'a') as fp:
-            #     for ex_id in batch_qa['example_ids'][::4]:
-            #         fp.write(ex_id)
-            #         fp.write(' ')
-            #     for ex_id in batch_qar['example_ids'][::4]:
-            #         fp.write(ex_id)
-            #         fp.write(' ')
-            #     fp.write('\n')
-
-            n_examples += batch_qa['input_ids'].size(0)
-
-            loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True, logitorprob='scores')
-            loss_qa = loss_qa.mean()
-
-            loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True, logitorprob='scores')
-            loss_qar = loss_qar.mean()
-
-            loss_align, out_align = align_fn(
-                att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
-                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
-            )
-            lw = F.sigmoid(model.layer_weights.float())
-            hw = F.sigmoid(model.head_weights.float())
-            loss_align = loss_align * lw.view(1, -1, 1) * hw.view(1, 1, -1)
-            loss_align = loss_align.mean()
-            loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
-            # loss_align = loss_align.mean()
-
-            # loss = loss_qa*0.5 + loss_qar*0.5
-            # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
-            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
-            delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
-            with amp.scale_loss(loss, optimizer, delay_unscale=delay_unscale
-                                ) as scaled_loss:
-                scaled_loss.backward()
-                if not delay_unscale:
-                    # gather gradients from every processes
-                    # do this before unscaling to make sure every process uses
-                    # the same gradient scale
-                    grads = [p.grad.data for p in model.parameters()
-                             if p.requires_grad and p.grad is not None]
-                    all_reduce_and_rescale_tensors(grads, float(1))
-
-            running_loss(loss.item())
-            running_loss_align(loss_align.item())
-
-            if (step + 1) % opts.gradient_accumulation_steps == 0:
-                with open(os.path.join(args.output_dir, 'align_weight.txt'), 'a') as fp:
-                    fp.write('layer weights')
-                    for i in range(12):
-                        fp.write(f'{lw[i].item()} ')
-                    fp.write('head weights')
-                    for i in range(12):
-                        fp.write(f'{hw[i].item()} ')
-                    fp.write('\n')
-
-                global_step += 1
-
-                # learning rate scheduling
-                lr_this_step = get_lr_sched(global_step, opts)
-                for i, param_group in enumerate(optimizer.param_groups):
-                    if i == 0 or i == 1:
-                        param_group['lr'] = lr_this_step * opts.lr_mul
-                    elif i == 2 or i == 3:
-                        param_group['lr'] = lr_this_step
-                    else:
-                        raise ValueError()
-                TB_LOGGER.add_scalar('lr', lr_this_step, global_step)
-
-                # log loss
-                # NOTE: not gathered across GPUs for efficiency
-                TB_LOGGER.add_scalar('loss', running_loss.val, global_step)
-                TB_LOGGER.add_scalar('loss_align', running_loss_align.val, global_step)
-                TB_LOGGER.step()
-
-                # update model params
-                if opts.grad_norm != -1:
-                    grad_norm = clip_grad_norm_(amp.master_params(optimizer),
-                                                opts.grad_norm)
-                    TB_LOGGER.add_scalar('grad_norm', grad_norm, global_step)
-                optimizer.step()
-                optimizer.zero_grad()
-                pbar.update(1)
-
-                if global_step % 100 == 0:
-                    # monitor training throughput
-                    LOGGER.info(f'============Step {global_step}=============')
-                    tot_ex = sum(all_gather_list(n_examples))
-                    ex_per_sec = int(tot_ex / (time()-start))
-                    LOGGER.info(f'{tot_ex} examples trained at '
-                                f'{ex_per_sec} ex/s')
-                    TB_LOGGER.add_scalar('perf/ex_per_s',
-                                         ex_per_sec, global_step)
-                    LOGGER.info('===========================================')
-
-                if global_step % opts.valid_steps == 0:
-                    val_log, results = validate(
-                        model, val_dataloader, align_fn=align_fn)
-                    TB_LOGGER.log_scaler_dict(val_log)
-                    model_saver.save(model, global_step)
-            if global_step >= opts.num_train_steps:
-                break
-        if global_step >= opts.num_train_steps:
-            break
-        n_epoch += 1
-        LOGGER.info(f"finished {n_epoch} epochs")
-    if global_step % opts.valid_steps != 0:
-        val_log, results = validate(
-            model, val_dataloader)
-        TB_LOGGER.log_scaler_dict(val_log)
-    val_log, results = validate(model, val_final_dataloader)
-    with open(f'{opts.output_dir}/results/'
-              f'results_{global_step}_final_qa_qar_'
-              f'rank{rank}.json', 'w') as f:
-        json.dump(results, f)
-    TB_LOGGER.log_scaler_dict(val_log)
-    model_saver.save(model, global_step)
+    val_log, results = validate(model, val_dataloader)
 
 
 def compute_accuracies(out_qa, labels_qa, out_qar, labels_qar):
@@ -442,118 +272,135 @@ def validate(model, val_loader, align_fn=None, visualize=False):
     n_ex = 0
     st = time()
     results = {}
-    for i, batch in enumerate(val_loader):
-        # 分开qa和qar的输入部分
-        batch_qa, batch_qar = {}, {}
-        qids = batch['qids']
-        for key, value in batch.items():
-            if len(value) == len(qids)*8:
-                qa_idxs = list(cytoolz.concat([(8 * i, 8 * i + 1, 8 * i + 2, 8 * i + 3) for i in range(len(qids))]))
-                qar_idxs = list(cytoolz.concat([(8 * i + 4, 8 * i + 5, 8 * i + 6, 8 * i + 7) for i in range(len(qids))]))
-                batch_qa[key] = value[qa_idxs]
-                batch_qar[key] = value[qar_idxs]
-            else:
-                batch_qa[key] = value
-                batch_qar[key] = value
+    with h5py.File(os.path.join(args.output_dir, f'attention_{logitorprob}.h5'), 'w') as h5fp:
+        for i, batch in enumerate(val_loader):
+            # 分开qa和qar的输入部分
+            batch_qa, batch_qar = {}, {}
+            qids = batch['qids']
+            for key, value in batch.items():
+                if len(value) == len(qids)*8:
+                    qa_idxs = list(cytoolz.concat([(8 * i, 8 * i + 1, 8 * i + 2, 8 * i + 3) for i in range(len(qids))]))
+                    qar_idxs = list(cytoolz.concat([(8 * i + 4, 8 * i + 5, 8 * i + 6, 8 * i + 7) for i in range(len(qids))]))
+                    batch_qa[key] = value[qa_idxs]
+                    batch_qar[key] = value[qar_idxs]
+                else:
+                    batch_qa[key] = value
+                    batch_qar[key] = value
 
-        # scores = model(batch, compute_loss=False)
-        drawer_qa = None
-        drawer_qar = None
-        # if visualize and n_ex % 1000 == 0:
-        # from utils.visualize import get_attention_drawer
-        #     dirname = os.path.join(LOGGER.handlers[0].baseFilename[:-12], 'figures')
-        #     drawer_qa = get_attention_drawer(os.path.join(dirname, f'attention_map_qa_{n_ex}.png'))
-        #     drawer_qar = get_attention_drawer(os.path.join(dirname, f'attention_map_qar_{n_ex}.png'))
-        scores1, att_qa, att_qa_mask = model(batch_qa, compute_loss=False, output_attention=True, draw_attention=drawer_qa)
-        scores2, att_qar, att_qar_mask = model(batch_qar, compute_loss=False, output_attention=True, draw_attention=drawer_qar)
-        qa_targets = batch['qa_targets']
-        qar_targets = batch['qar_targets']
+            # scores = model(batch, compute_loss=False)
+            drawer_qa = None
+            drawer_qar = None
+            # if visualize and n_ex % 1000 == 0:
+            # from utils.visualize import get_attention_drawer
+            #     dirname = os.path.join(LOGGER.handlers[0].baseFilename[:-12], 'figures')
+            #     drawer_qa = get_attention_drawer(os.path.join(dirname, f'attention_map_qa_{n_ex}.png'))
+            #     drawer_qar = get_attention_drawer(os.path.join(dirname, f'attention_map_qar_{n_ex}.png'))
+            scores1, att_qa, att_qa_mask = model(batch_qa, compute_loss=False, output_attention=True, draw_attention=drawer_qa, logitorprob=logitorprob)
+            scores2, att_qar, att_qar_mask = model(batch_qar, compute_loss=False, output_attention=True, draw_attention=drawer_qar, logitorprob=logitorprob)
 
-        # scores = scores.view(len(qids), -1)
-        scores1 = scores1.view(len(qids), 4)
-        scores2 = scores2.view(len(qids), 4)
+            qa_targets = batch['qa_targets']
+            qar_targets = batch['qar_targets']
+            for _idx, qid in enumerate(qids):
+                ex_group = h5fp.create_group(qid)
+                q2a_group = ex_group.create_group('q2a')
+                qa2r_group = ex_group.create_group('qa2r')
+                # import pdb; pdb.set_trace()
+                q2a_group.create_dataset('target', data=qa_targets[_idx, 0].item())
+                qa2r_group.create_dataset('target', data=qar_targets[_idx, 0].item())
+                for choice in range(4):
+                    att_qa_ = torch.stack([att_qa[layer][_idx][choice] for layer in range(12)], dim=0) # layer x head x nobj
+                    q2a_group.create_dataset(f'attention{choice}', data=att_qa_.data.cpu().numpy())
+                    q2a_group.create_dataset(f'mask{choice}', data=att_qa_mask[_idx][choice][0].data.cpu().numpy())  # nobj
+
+                    att_qar_ = torch.stack([att_qar[layer][_idx][choice] for layer in range(12)], dim=0) # layer x head x nobj
+                    qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
+                    qa2r_group.create_dataset(f'mask{choice}', data=att_qar_mask[_idx][choice][0].data.cpu().numpy())  # nobj
+
+            # scores = scores.view(len(qids), -1)
+            scores1 = scores1.view(len(qids), 4)
+            scores2 = scores2.view(len(qids), 4)
+            if align_fn is not None:
+                loss_align_ = align_fn(
+                    att_qa, att_qa_mask, qa_targets.squeeze(-1),
+                    att_qar, att_qar_mask, qar_targets.squeeze(-1),
+                )
+                lw = F.sigmoid(model.layer_weights.float())
+                hw = F.sigmoid(model.head_weights.float())
+                loss_align_ = loss_align_ * lw.view(1, -1, 1) * hw.view(1, 1, -1)
+                loss_align_ = loss_align_.mean()
+                loss_align += loss_align_.item() * len(qids)
+            vcr_qa_loss = F.cross_entropy(
+                scores1, qa_targets.squeeze(-1), reduction="sum")
+            # vcr_qa_loss = F.cross_entropy(
+                    # scores[:, :4], qa_targets.squeeze(-1), reduction="sum")
+            # if scores.shape[1] > 8:
+            #     qar_scores = []
+            #     for batch_id in range(scores.shape[0]):
+            #         answer_ind = qa_targets[batch_id].item()
+            #         qar_index = [4+answer_ind*4+i
+            #                      for i in range(4)]
+            #         qar_scores.append(scores[batch_id, qar_index])
+            #     qar_scores = torch.stack(qar_scores, dim=0)
+            # else:
+            #     qar_scores = scores[:, 4:]
+            # vcr_qar_loss = F.cross_entropy(
+            #     qar_scores, qar_targets.squeeze(-1), reduction="sum")
+            vcr_qar_loss = F.cross_entropy(
+                scores2, qar_targets.squeeze(-1), reduction="sum")
+            val_qa_loss += vcr_qa_loss.item()
+            val_qar_loss += vcr_qar_loss.item()
+            curr_qa_score, curr_qar_score, curr_score = compute_accuracies(
+                scores1, qa_targets, scores2, qar_targets)
+            # curr_qa_score, curr_qar_score, curr_score = compute_accuracies(
+            #     scores[:, :4], qa_targets, qar_scores, qar_targets)
+            tot_qar_score += curr_qar_score
+            tot_qa_score += curr_qa_score
+            tot_score += curr_score
+            # for qid, score in zip(qids, scores):
+            #     results[qid] = score.cpu().tolist()
+            for qid, score1, score2 in zip(qids, scores1, scores2):
+                results[qid] = score1.cpu().tolist() + score2.cpu().tolist()
+            n_ex += len(qids)
+            val_pbar.update(1)
+        val_qa_loss = sum(all_gather_list(val_qa_loss))
+        val_qar_loss = sum(all_gather_list(val_qar_loss))
+        tot_qa_score = sum(all_gather_list(tot_qa_score))
+        tot_qar_score = sum(all_gather_list(tot_qar_score))
+        tot_score = sum(all_gather_list(tot_score))
+        n_ex = sum(all_gather_list(n_ex))
+        tot_time = time()-st
+        val_qa_loss /= n_ex
+        val_qar_loss /= n_ex
+        val_qa_acc = tot_qa_score / n_ex
+        val_qar_acc = tot_qar_score / n_ex
+        val_acc = tot_score / n_ex
         if align_fn is not None:
-            loss_align_ = align_fn(
-                att_qa, att_qa_mask, qa_targets.reshape(-1, 4).argmax(-1),
-                att_qar, att_qar_mask, qar_targets.reshape(-1, 4).argmax(-1),
-            )
-            lw = F.sigmoid(model.layer_weights.float())
-            hw = F.sigmoid(model.head_weights.float())
-            loss_align_ = loss_align_ * lw.view(1, -1, 1) * hw.view(1, 1, -1)
-            loss_align_ = loss_align_.mean()
-            loss_align += loss_align_.item() * len(qids)
-        vcr_qa_loss = F.cross_entropy(
-            scores1, qa_targets.squeeze(-1), reduction="sum")
-        # vcr_qa_loss = F.cross_entropy(
-                # scores[:, :4], qa_targets.squeeze(-1), reduction="sum")
-        # if scores.shape[1] > 8:
-        #     qar_scores = []
-        #     for batch_id in range(scores.shape[0]):
-        #         answer_ind = qa_targets[batch_id].item()
-        #         qar_index = [4+answer_ind*4+i
-        #                      for i in range(4)]
-        #         qar_scores.append(scores[batch_id, qar_index])
-        #     qar_scores = torch.stack(qar_scores, dim=0)
-        # else:
-        #     qar_scores = scores[:, 4:]
-        # vcr_qar_loss = F.cross_entropy(
-        #     qar_scores, qar_targets.squeeze(-1), reduction="sum")
-        vcr_qar_loss = F.cross_entropy(
-            scores2, qar_targets.squeeze(-1), reduction="sum")
-        val_qa_loss += vcr_qa_loss.item()
-        val_qar_loss += vcr_qar_loss.item()
-        curr_qa_score, curr_qar_score, curr_score = compute_accuracies(
-            scores1, qa_targets, scores2, qar_targets)
-        # curr_qa_score, curr_qar_score, curr_score = compute_accuracies(
-        #     scores[:, :4], qa_targets, qar_scores, qar_targets)
-        tot_qar_score += curr_qar_score
-        tot_qa_score += curr_qa_score
-        tot_score += curr_score
-        # for qid, score in zip(qids, scores):
-        #     results[qid] = score.cpu().tolist()
-        for qid, score1, score2 in zip(qids, scores1, scores2):
-            results[qid] = score1.cpu().tolist() + score2.cpu().tolist()
-        n_ex += len(qids)
-        val_pbar.update(1)
-    val_qa_loss = sum(all_gather_list(val_qa_loss))
-    val_qar_loss = sum(all_gather_list(val_qar_loss))
-    tot_qa_score = sum(all_gather_list(tot_qa_score))
-    tot_qar_score = sum(all_gather_list(tot_qar_score))
-    tot_score = sum(all_gather_list(tot_score))
-    n_ex = sum(all_gather_list(n_ex))
-    tot_time = time()-st
-    val_qa_loss /= n_ex
-    val_qar_loss /= n_ex
-    val_qa_acc = tot_qa_score / n_ex
-    val_qar_acc = tot_qar_score / n_ex
-    val_acc = tot_score / n_ex
-    if align_fn is not None:
-        loss_align = sum(all_gather_list(loss_align))
-        loss_align /= n_ex
-    val_log = {'valid/vcr_qa_loss': val_qa_loss,
-               'valid/vcr_qar_loss': val_qar_loss,
-               'valid/acc_qa': val_qa_acc,
-               'valid/acc_qar': val_qar_acc,
-               'valid/acc': val_acc,
-               'valid/align_loss': loss_align,
-               'valid/ex_per_s': n_ex/tot_time}
-    model.train()
-    align_str = ''
+            loss_align = sum(all_gather_list(loss_align))
+            loss_align /= n_ex
+        val_log = {'valid/vcr_qa_loss': val_qa_loss,
+                   'valid/vcr_qar_loss': val_qar_loss,
+                   'valid/acc_qa': val_qa_acc,
+                   'valid/acc_qar': val_qar_acc,
+                   'valid/acc': val_acc,
+                   'valid/align_loss': loss_align,
+                   'valid/ex_per_s': n_ex/tot_time}
+        model.train()
+        align_str = ''
 
-    # if align_fn is not None:
-    #     for key, value in align_fn.get_metrics(True).items():
-    #         if 'acc' in key:
-    #             align_str += f'{key}: {value*100:.2f};'
-    #         else:
-    #             align_str += f'{key}: {value:.2f};'
-    LOGGER.info(f"validation finished in {int(tot_time)} seconds, "
-                f"score_qa: {val_qa_acc*100:.2f} "
-                f"score_qar: {val_qar_acc*100:.2f} "
-                f"score: {val_acc*100:.2f} "
-                f"loss_qa: {val_qa_loss:.2f} "
-                f"loss_qar: {val_qar_loss:.2f} "
-                f"loss_align: {loss_align:.2f}"
-                f"{align_str}")
+        # if align_fn is not None:
+        #     for key, value in align_fn.get_metrics(True).items():
+        #         if 'acc' in key:
+        #             align_str += f'{key}: {value*100:.2f};'
+        #         else:
+        #             align_str += f'{key}: {value:.2f};'
+        LOGGER.info(f"validation finished in {int(tot_time)} seconds, "
+                    f"score_qa: {val_qa_acc*100:.2f} "
+                    f"score_qar: {val_qar_acc*100:.2f} "
+                    f"score: {val_acc*100:.2f} "
+                    f"loss_qa: {val_qa_loss:.2f} "
+                    f"loss_qar: {val_qar_loss:.2f} "
+                    f"loss_align: {loss_align:.2f}"
+                    f"{align_str}")
     return val_log, results
 
 
@@ -569,15 +416,6 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint",
                         default=None, type=str,
                         help="pretrained model")
-    parser.add_argument("--checkpoint_from",
-                        default='pretrain', type=str,
-                        choices=['pretrain', 'vcr_pretrain'],
-                        help="which setting is checkpoint from")
-
-    parser.add_argument(
-        "--output_dir", default=None, type=str,
-        help="The output directory where the model checkpoints will be "
-             "written.")
 
     # Prepro parameters
     parser.add_argument('--max_txt_len', type=int, default=60,
