@@ -473,9 +473,9 @@ def validate(model, val_loader, align_fn=None, visualize=False):
         scores1 = scores1.view(len(qids), 4)
         scores2 = scores2.view(len(qids), 4)
         if align_fn is not None:
-            loss_align_ = align_fn(
-                att_qa, att_qa_mask, qa_targets.reshape(-1, 4).argmax(-1),
-                att_qar, att_qar_mask, qar_targets.reshape(-1, 4).argmax(-1),
+            loss_align_, _ = align_fn(
+                att_qa, att_qa_mask, qa_targets.squeeze(-1),
+                att_qar, att_qar_mask, qar_targets.squeeze(-1),
             )
             lw = F.sigmoid(model.layer_weights.float())
             hw = F.sigmoid(model.head_weights.float())

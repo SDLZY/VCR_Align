@@ -374,29 +374,33 @@ class UniterModel(UniterPreTrainedModel):
             output_all_encoded_layers=output_all_encoded_layers, output_attention=output_attention)
 
         if output_attention:
+
+            # import pdb; pdb.set_trace()
             encoded_layers, all_attention_list = output_encoded_layers
-            sequence_object_mask_ = (gather_index[:, :] < input_ids.shape[1]).long() * attention_mask
-            sequence_object_mask = attention_mask - sequence_object_mask_
-            num_obj_tokens = sequence_object_mask.sum(-1)
-            box_mask = sequence_object_mask.new_zeros((sequence_object_mask.shape[0], num_obj_tokens.max()))
-            for i, n in enumerate(num_obj_tokens):
-                box_mask[i, :n] += 1
-            cls_att_dict = {}
-            for layer in range(len(all_attention_list)):
-                cls_attention = all_attention_list[layer][logitorprob][:, :, 0]
-                bs, num_heads, _ = cls_attention.shape
-                cls_attention_new = cls_attention.new_zeros((bs, num_heads, box_mask.shape[-1]))
-                if logitorprob == 'scores':
-                    cls_attention_new = cls_attention_new.fill_(-1e+04)
-                cls_attention_new[box_mask.unsqueeze(1).repeat(1, num_heads, 1)>0] = cls_attention[sequence_object_mask.unsqueeze(1).repeat(1, num_heads, 1)>0]
-                # if logitorprob == 'scores':
-                #     cls_attention_new = nn.Softmax(dim=-1)(cls_attention_new)
-                cls_att_dict[layer] = cls_attention_new.view(bs // 4, 4, num_heads, -1)
-            box_mask = box_mask.unsqueeze(1).repeat(1, num_heads, 1).view(bs//4, 4, num_heads, -1)
+            all_attention = torch.stack([att[logitorprob] for att in all_attention_list], dim=1)
+            # sequence_object_mask_ = (gather_index[:, :] < input_ids.shape[1]).long() * attention_mask
+            # sequence_object_mask = attention_mask - sequence_object_mask_
+            # num_obj_tokens = sequence_object_mask.sum(-1)
+            # box_mask = sequence_object_mask.new_zeros((sequence_object_mask.shape[0], num_obj_tokens.max()))
+            # for i, n in enumerate(num_obj_tokens):
+            #     box_mask[i, :n] += 1
+            # cls_att_dict = {}
+            # for layer in range(len(all_attention_list)):
+            #     cls_attention = all_attention_list[layer][logitorprob][:, :, 0]
+            #     bs, num_heads, _ = cls_attention.shape
+            #     cls_attention_new = cls_attention.new_zeros((bs, num_heads, box_mask.shape[-1]))
+            #     if logitorprob == 'scores':
+            #         cls_attention_new = cls_attention_new.fill_(-1e+04)
+            #     cls_attention_new[box_mask.unsqueeze(1).repeat(1, num_heads, 1)>0] = cls_attention[sequence_object_mask.unsqueeze(1).repeat(1, num_heads, 1)>0]
+            #     if logitorprob == 'scores':
+            #         cls_attention_new = nn.Softmax(dim=-1)(cls_attention_new)
+                # cls_att_dict[layer] = cls_attention_new.view(bs // 4, 4, num_heads, -1)
+            # box_mask = box_mask.unsqueeze(1).repeat(1, num_heads, 1).view(bs//4, 4, num_heads, -1)
         else:
             encoded_layers = output_encoded_layers
         if not output_all_encoded_layers:
             encoded_layers = encoded_layers[-1]
         if output_attention:
-            return encoded_layers, cls_att_dict, box_mask
+            # return encoded_layers, cls_att_dict, box_mask
+            return encoded_layers, all_attention, None
         return encoded_layers
