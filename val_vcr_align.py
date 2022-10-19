@@ -301,7 +301,7 @@ def validate(model, val_loader, align_fn=None, visualize=False):
             qa_targets = batch['qa_targets']
             qar_targets = batch['qar_targets']
             for _idx, qid in enumerate(qids):
-                import pdb; pdb.set_trace()
+                # import pdb; pdb.set_trace()
                 ex_group = h5fp.create_group(qid)
                 q2a_group = ex_group.create_group('q2a')
                 qa2r_group = ex_group.create_group('qa2r')
@@ -309,15 +309,24 @@ def validate(model, val_loader, align_fn=None, visualize=False):
                 q2a_group.create_dataset('target', data=qa_targets[_idx, 0].item())
                 qa2r_group.create_dataset('target', data=qar_targets[_idx, 0].item())
                 for choice in range(4):
-                    att_qa_ = torch.stack([att_qa[layer][_idx][choice] for layer in range(12)], dim=0)  # layer x head x nobj
-                    q2a_group.create_dataset(f'input_ids{choice}', data=batch_qa['input_ids'][_idx*4+choice].data.cpu().numpy())
+                    input_ids_qa = batch_qa['input_ids'][_idx*4+choice]
+                    input_ids_qa = input_ids_qa[input_ids_qa > 0]
+                    mask_qa = batch_qa['attn_masks'][_idx*4+choice]
+                    att_qa_ = att_qa[_idx*4+choice][:, :, mask_qa > 0][:, :, :, mask_qa > 0]
+                    q2a_group.create_dataset(f'input_ids{choice}', data=input_ids_qa.data.cpu().numpy())
                     q2a_group.create_dataset(f'attention{choice}', data=att_qa_.data.cpu().numpy())
-                    q2a_group.create_dataset(f'mask{choice}', data=att_qa_mask[_idx][choice][0].data.cpu().numpy())  # nobj
 
-                    att_qar_ = torch.stack([att_qar[layer][_idx][choice] for layer in range(12)], dim=0)  # layer x head x nobj
-                    q2a_group.create_dataset(f'input_ids{choice}', data=batch_qar['input_ids'][_idx*4+choice].data.cpu().numpy())
+                    input_ids_qar = batch_qar['input_ids'][_idx*4+choice]
+                    input_ids_qar = input_ids_qar[input_ids_qar > 0]
+                    mask_qar = batch_qar['attn_masks'][_idx*4+choice]
+                    att_qar_ = att_qar[_idx*4+choice][:, :, mask_qar > 0][:, :, :, mask_qar > 0]
+                    qa2r_group.create_dataset(f'input_ids{choice}', data=input_ids_qar.data.cpu().numpy())
                     qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
-                    qa2r_group.create_dataset(f'mask{choice}', data=att_qar_mask[_idx][choice][0].data.cpu().numpy())  # nobj
+
+                    # att_qar_ = torch.stack([att_qar[layer][_idx][choice] for layer in range(12)], dim=0)  # layer x head x nobj
+                    # q2a_group.create_dataset(f'input_ids{choice}', data=batch_qar['input_ids'][_idx*4+choice].data.cpu().numpy())
+                    # qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
+                    # qa2r_group.create_dataset(f'mask{choice}', data=att_qar_mask[_idx][choice][0].data.cpu().numpy())  # nobj
 
             # scores = scores.view(len(qids), -1)
             scores1 = scores1.view(len(qids), 4)
