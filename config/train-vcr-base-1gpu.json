@@ -16,6 +16,8 @@
     "val_batch_size": 10,
     "gradient_accumulation_steps": 20,
     "learning_rate": 6e-05,
+    "min_lr": 1e-6,
+    "lr_decay": "linear",
     "lr_mul": 1.0,
     "valid_steps": 1000,
     "num_train_steps": 8000,

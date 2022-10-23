@@ -638,6 +638,8 @@ if __name__ == "__main__":
     # can use config files
     parser.add_argument('--alpha', type=float, default=1.0, help='weight of align loss')
     parser.add_argument('--gamma', type=float, default=1.0, help='weight of align coefficient')
+    parser.add_argument('--sp_alpha', type=float, default=1.0, help='weight of align coefficient')
+    parser.add_argument('--lr_decay_rate', type=float, default=1.0)
     parser.add_argument('--config', help='JSON config files')
 
     args = parse_with_config(parser)

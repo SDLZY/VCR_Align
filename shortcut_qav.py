@@ -42,8 +42,8 @@ if __name__ == '__main__':
             sep_pos_qar = np.where(ids_qar == 102)[0].tolist()
 
             # import pdb; pdb.set_trace()
-            slices = [slice(i + 1, j) for i, j in zip([-1] + sep_pos_qar[:-1], sep_pos_qar)]
-            att_map = np.empty((*att_qar.shape[:2], 3, 3))
+            slices = [slice(i + 1, j) for i, j in zip([-1] + sep_pos_qar, sep_pos_qar+[att_qar.shape[-1]])]
+            att_map = np.empty((*att_qar.shape[:2], 4, 4))
             for i, qidx in enumerate(slices):
                 for j, kidx in enumerate(slices):
                     att_map[:, :, i, j] = att_qar[:, :, qidx, kidx].sum(-1).mean(-1)
@@ -52,5 +52,6 @@ if __name__ == '__main__':
 
     results = np.array(results)
     print(results.shape)
+    print(results.mean((0,1,2)))
     # print(results)
-    np.save(os.path.join(data_dir, 'qav_att_map.npy'), results)
+    np.save(os.path.join(data_dir, 'qarv_att_map.npy'), results)
