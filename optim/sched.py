@@ -62,7 +62,7 @@ def get_lr_sched(global_step, opts):
                                                        opts.learning_rate, opts.min_lr)
     elif opts.lr_decay == 'linear':
         lr_this_step = opts.learning_rate * warmup_linear(
-            global_step, opts.warmup_steps, opts.num_train_steps)
+            global_step, opts.warmup_steps, opts.num_lr_decay_steps)
         # if lr_this_step <= 0:
         #     lr_this_step = 1e-8
 

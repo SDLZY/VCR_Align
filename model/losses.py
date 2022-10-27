@@ -659,6 +659,41 @@ class AlignAppRankLoss(nn.Module):
         return loss, None
 
 
+class AlignListMLE(nn.Module):
+    def __init__(self, layers, mode='exp', alpha=1.0):
+        super().__init__()
+        self.mode = mode
+        self.alpha = alpha
+        self.layers = layers
+
+    # def forward(self, input1, mask1, input2, mask2, label=None):
+    def forward(self, att1_list: Dict[int, torch.Tensor], att1_mask: torch.Tensor, target1: torch.Tensor,
+                att2_list: Dict[int, torch.Tensor], att2_mask: torch.Tensor, target2: torch.Tensor, record=False):
+        bs, _, nheads, _ = att1_list[0].shape
+        att1_list = {key: att.permute(0, 2, 1, 3).contiguous().view(bs*nheads, 4, -1) for key, att in att1_list.items()}
+        att2_list = {key: att.permute(0, 2, 1, 3).contiguous().view(bs*nheads, 4, -1) for key, att in att2_list.items()}
+        att1_mask = att1_mask.permute(0, 2, 1, 3).contiguous().view((bs*nheads, 4, -1))
+        att2_mask = att2_mask.permute(0, 2, 1, 3).contiguous().view((bs*nheads, 4, -1))
+        target1 = target1.view(-1, 1).repeat(1, nheads).view(-1)
+        target2 = target2.view(-1, 1).repeat(1, nheads).view(-1)
+        losses = []
+        for layer in self.layers:
+            # import pdb; pdb.set_trace()
+            att1 = att1_list[layer]
+            att2 = att2_list[layer]
+            att1_gt = att1[torch.arange(bs*nheads), target1.long()] * att1_mask[:, 0].float()
+            att2_gt = att2[torch.arange(bs*nheads), target2.long()] * att2_mask[:, 0].float()
+            att1_gt = att1_gt.view(bs, nheads, -1)
+            att2_gt = att2_gt.view(bs, nheads, -1)
+            mask1 = att1_mask[:, 0].view(bs, nheads, -1)
+            mask2 = att2_mask[:, 0].view(bs, nheads, -1)
+
+            loss = ltr.listmle(att1_gt, mask1, att2_gt, mask2)
+            losses.append(loss.view(bs, nheads))
+        loss = torch.stack(losses, dim=1)
+        return loss, None
+
+
 SIMILARITY_FUNCTIONS = {
     'inner_product': InnerProduct, 'cosine': CosineSimilarity, 'cosface': AddMarginProduct, 'arcface': ArcMarginProduct,
     'apprank': AppRank, 'listmle': ListMLE, 'spearman': Spearman,
@@ -667,7 +702,8 @@ SIMILARITY_FUNCTIONS = {
 LOSS_FUNCTIONS = {'ce': nn.CrossEntropyLoss, 'mrl': MarginRankingLoss, 'embed': EmbeddingLoss,
                   'bce': BinaryCrossEntropyLoss, 'focal': FocalLoss}
 ALIGN_MODELS = {'align4': AlignLoss, 'align16': AlignLoss16, 'cosembedding4': CosineEmbeddingAlignLoss4,
-                'l1_loss': AlignL1Loss, 'spearman_loss': AlignSpearmanLoss, 'apprank_loss': AlignAppRankLoss}
+                'l1_loss': AlignL1Loss, 'spearman_loss': AlignSpearmanLoss, 'apprank_loss': AlignAppRankLoss,
+                'listmle_loss': AlignListMLE}
 
 
 def get_align_model(model_params, sim_fn_params=None, loss_fn_params=None):
@@ -679,7 +715,7 @@ def get_align_model(model_params, sim_fn_params=None, loss_fn_params=None):
     loss_fn = None
     if loss_fn_params:
         loss_fn = LOSS_FUNCTIONS[loss_fn_params.pop('name')](**loss_fn_params)
-    if model_name in ('cosembedding4', 'l1_loss', 'spearman_loss', 'apprank_loss'):
+    if model_name in ('cosembedding4', 'l1_loss', 'spearman_loss', 'apprank_loss', 'listmle_loss'):
         model = align_model(**model_params)
     else:
         model = align_model(sim_fn=sim_fn, loss_fn=loss_fn, **model_params)

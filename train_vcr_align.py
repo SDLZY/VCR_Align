@@ -284,6 +284,7 @@ def main(opts):
     #     sim_fn_params={'name': 'arcface'},
     #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
     # )
+    # align_fn = get_align_model(model_params={'name': 'listmle_loss', 'alpha': args.mle_alpha ,'layers': [i for i in range(12)]})
     align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
 
     running_loss = RunningMeter('loss')
@@ -308,10 +309,10 @@ def main(opts):
 
             n_examples += batch_qa['input_ids'].size(0)
 
-            loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True, logitorprob='scores')
+            loss_qa, att_qa, att_qa_mask = model(batch_qa, compute_loss=True, output_attention=True, logitorprob='probs')
             loss_qa = loss_qa.mean()
 
-            loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True, logitorprob='scores')
+            loss_qar, att_qar, att_qar_mask = model(batch_qar, compute_loss=True, output_attention=True, logitorprob='probs')
             loss_qar = loss_qar.mean()
 
             loss_align, out_align = align_fn(
@@ -639,7 +640,10 @@ if __name__ == "__main__":
     parser.add_argument('--alpha', type=float, default=1.0, help='weight of align loss')
     parser.add_argument('--gamma', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--sp_alpha', type=float, default=1.0, help='weight of align coefficient')
+    parser.add_argument('--mle_alpha', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--lr_decay_rate', type=float, default=1.0)
+    parser.add_argument("--num_lr_decay_steps", default=100000, type=int,
+                        help="Total number of training updates to perform.")
     parser.add_argument('--config', help='JSON config files')
 
     args = parse_with_config(parser)
@@ -654,4 +658,9 @@ if __name__ == "__main__":
     else:
         assert args.num_bb + args.max_txt_len + 2 <= 512
 
+    # for mle_alpha in (1, 0.1, 0.01):
+    #     args.mle_alpha = mle_alpha
+    #     args.output_dir += f'_mlealpha{mle_alpha}'
+    #     main(args)
     main(args)
+

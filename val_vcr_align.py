@@ -38,7 +38,6 @@ from model.losses import get_align_model
 import numpy as np
 
 import cytoolz
-import h5py
 import copy
 import shutil
 import copy
@@ -272,7 +271,12 @@ def validate(model, val_loader, align_fn=None, visualize=False):
     n_ex = 0
     st = time()
     results = {}
-    with h5py.File(os.path.join(args.output_dir, f'attention_{logitorprob}.h5'), 'w') as h5fp:
+    try:
+        h5fp = None
+        if args.save_attention:
+            import h5py
+            h5fp = h5py.File(os.path.join(args.output_dir, f'attention_{logitorprob}.h5'), 'w')
+    # with h5py.File(os.path.join(args.output_dir, f'attention_{logitorprob}.h5'), 'w') as h5fp:
         for i, batch in enumerate(val_loader):
             # 分开qa和qar的输入部分
             batch_qa, batch_qar = {}, {}
@@ -300,33 +304,34 @@ def validate(model, val_loader, align_fn=None, visualize=False):
 
             qa_targets = batch['qa_targets']
             qar_targets = batch['qar_targets']
-            for _idx, qid in enumerate(qids):
-                # import pdb; pdb.set_trace()
-                ex_group = h5fp.create_group(qid)
-                q2a_group = ex_group.create_group('q2a')
-                qa2r_group = ex_group.create_group('qa2r')
-                # import pdb; pdb.set_trace()
-                q2a_group.create_dataset('target', data=qa_targets[_idx, 0].item())
-                qa2r_group.create_dataset('target', data=qar_targets[_idx, 0].item())
-                for choice in range(4):
-                    input_ids_qa = batch_qa['input_ids'][_idx*4+choice]
-                    input_ids_qa = input_ids_qa[input_ids_qa > 0]
-                    mask_qa = batch_qa['attn_masks'][_idx*4+choice]
-                    att_qa_ = att_qa[_idx*4+choice][:, :, mask_qa > 0][:, :, :, mask_qa > 0]
-                    q2a_group.create_dataset(f'input_ids{choice}', data=input_ids_qa.data.cpu().numpy())
-                    q2a_group.create_dataset(f'attention{choice}', data=att_qa_.data.cpu().numpy())
+            if h5fp is not None:
+                for _idx, qid in enumerate(qids):
+                    # import pdb; pdb.set_trace()
+                    ex_group = h5fp.create_group(qid)
+                    q2a_group = ex_group.create_group('q2a')
+                    qa2r_group = ex_group.create_group('qa2r')
+                    # import pdb; pdb.set_trace()
+                    q2a_group.create_dataset('target', data=qa_targets[_idx, 0].item())
+                    qa2r_group.create_dataset('target', data=qar_targets[_idx, 0].item())
+                    for choice in range(4):
+                        input_ids_qa = batch_qa['input_ids'][_idx*4+choice]
+                        input_ids_qa = input_ids_qa[input_ids_qa > 0]
+                        mask_qa = batch_qa['attn_masks'][_idx*4+choice]
+                        att_qa_ = att_qa[_idx*4+choice][:, :, mask_qa > 0][:, :, :, mask_qa > 0]
+                        q2a_group.create_dataset(f'input_ids{choice}', data=input_ids_qa.data.cpu().numpy())
+                        q2a_group.create_dataset(f'attention{choice}', data=att_qa_.data.cpu().numpy())
 
-                    input_ids_qar = batch_qar['input_ids'][_idx*4+choice]
-                    input_ids_qar = input_ids_qar[input_ids_qar > 0]
-                    mask_qar = batch_qar['attn_masks'][_idx*4+choice]
-                    att_qar_ = att_qar[_idx*4+choice][:, :, mask_qar > 0][:, :, :, mask_qar > 0]
-                    qa2r_group.create_dataset(f'input_ids{choice}', data=input_ids_qar.data.cpu().numpy())
-                    qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
+                        input_ids_qar = batch_qar['input_ids'][_idx*4+choice]
+                        input_ids_qar = input_ids_qar[input_ids_qar > 0]
+                        mask_qar = batch_qar['attn_masks'][_idx*4+choice]
+                        att_qar_ = att_qar[_idx*4+choice][:, :, mask_qar > 0][:, :, :, mask_qar > 0]
+                        qa2r_group.create_dataset(f'input_ids{choice}', data=input_ids_qar.data.cpu().numpy())
+                        qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
 
-                    # att_qar_ = torch.stack([att_qar[layer][_idx][choice] for layer in range(12)], dim=0)  # layer x head x nobj
-                    # q2a_group.create_dataset(f'input_ids{choice}', data=batch_qar['input_ids'][_idx*4+choice].data.cpu().numpy())
-                    # qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
-                    # qa2r_group.create_dataset(f'mask{choice}', data=att_qar_mask[_idx][choice][0].data.cpu().numpy())  # nobj
+                        # att_qar_ = torch.stack([att_qar[layer][_idx][choice] for layer in range(12)], dim=0)  # layer x head x nobj
+                        # q2a_group.create_dataset(f'input_ids{choice}', data=batch_qar['input_ids'][_idx*4+choice].data.cpu().numpy())
+                        # qa2r_group.create_dataset(f'attention{choice}', data=att_qar_.data.cpu().numpy())
+                        # qa2r_group.create_dataset(f'mask{choice}', data=att_qar_mask[_idx][choice][0].data.cpu().numpy())  # nobj
 
             # scores = scores.view(len(qids), -1)
             scores1 = scores1.view(len(qids), 4)
@@ -413,6 +418,9 @@ def validate(model, val_loader, align_fn=None, visualize=False):
                     f"loss_qar: {val_qar_loss:.2f} "
                     f"loss_align: {loss_align:.2f}"
                     f"{align_str}")
+    finally:
+        if h5fp is not None:
+            h5fp.close()
     return val_log, results
 
 
@@ -428,6 +436,7 @@ if __name__ == "__main__":
     parser.add_argument("--checkpoint",
                         default=None, type=str,
                         help="pretrained model")
+    parser.add_argument('--save_attention', action='store_true')
 
     # Prepro parameters
     parser.add_argument('--max_txt_len', type=int, default=60,
