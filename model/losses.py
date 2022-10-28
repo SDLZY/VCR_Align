@@ -32,6 +32,17 @@ class CosineSimilarity(nn.Module):
         return cosine
 
 
+class NegativeL1(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input1, mask1, input2, mask2, label=None):
+        input1 = input1 * mask1.float()
+        input2 = input2 * mask2.float()
+        dist = (F.l1_loss(input1, input2, reduction='none') * mask1.float()).sum(-1)
+        return -dist
+
+
 class NegativeMSE(nn.Module):
     """mean square error"""
     def __init__(self):
@@ -311,6 +322,92 @@ class FocalLoss(nn.Module):
         pt = torch.exp(-bce)
         loss = (1 - pt)**self.gamma * bce
         return loss
+
+
+class AlignLossPerHead(nn.Module):
+    def __init__(self, sim_fn, loss_fn, layers, nheads):
+        super(AlignLossPerHead, self).__init__()
+        self.sim_fn = sim_fn
+        self.loss_fn = loss_fn
+        self.layers = layers
+        self.nheads = nheads
+        self.acc1 = dict((layer, [0.]*nheads) for layer in layers)
+        self.acc2 = dict((layer, [0.]*nheads) for layer in layers)
+        self.loss1 = dict((layer, [0.]*nheads) for layer in layers)
+        self.loss2 = dict((layer, [0.]*nheads) for layer in layers)
+        self.count = 0
+
+    def forward(self, att1_dict: Dict[int, torch.Tensor], att1_mask: torch.Tensor, target1: torch.Tensor,
+                att2_dict: Dict[int, torch.Tensor], att2_mask: torch.Tensor, target2: torch.Tensor, record=False):
+        # import pdb; pdb.set_trace()
+        bs, _, nheads, _ = att1_dict[0].shape
+        # losses = [[] for _ in range(self.layers)]
+        losses = []
+        output_dict = {}
+        for i, layer in enumerate(self.layers):
+            att1 = att1_dict[layer]
+            att2 = att2_dict[layer]
+            # att1_mask = att1_mask[:, 0]
+            # att2_mask = att2_mask[:, 0]
+            att1_gt = att1[torch.arange(bs), target1.long()] * att1_mask[:, 0].float()  # bs, nheads, -1
+            att2_gt = att2[torch.arange(bs), target2.long()] * att2_mask[:, 0].float()
+            att1_gt = att1_gt.unsqueeze(1).repeat(1, 4, 1, 1)
+            att2_gt = att2_gt.unsqueeze(1).repeat(1, 4, 1, 1)
+            sim1 = self.sim_fn(att1, att1_mask, att2_gt, att2_mask)  # bs, 4, nheads
+            sim2 = self.sim_fn(att2, att2_mask, att1_gt, att1_mask)
+            losses_ = []
+            for head in range(self.nheads):
+                sim1_h = sim1[:, :, head]  # bs, 4
+                sim2_h = sim2[:, :, head]
+                loss1 = self.loss_fn(sim1_h, target1)  # bs
+                loss2 = self.loss_fn(sim2_h, target2)  # bs
+                loss = (loss1 + loss2) / 2
+                losses_.append(loss)
+                output_dict[f'loss1_{layer}_{head}'] = loss1.mean().item()
+                output_dict[f'loss2_{layer}_{head}'] = loss2.mean().item()
+                output_dict[f'acc1_{layer}_{head}'] = (sim1_h.argmax(-1) == target1).float().mean().item()
+                output_dict[f'acc2_{layer}_{head}'] = (sim2_h.argmax(-1) == target2).float().mean().item()
+                if record:
+                    self.loss1[layer][head] += output_dict[f'loss1_{layer}_{head}'] * bs
+                    self.loss2[layer][head] += output_dict[f'loss2_{layer}_{head}'] * bs
+                    self.acc1[layer][head] += output_dict[f'acc1_{layer}_{head}'] * bs
+                    self.acc2[layer][head] += output_dict[f'acc2_{layer}_{head}'] * bs
+            loss = torch.stack(losses_, dim=1)
+            losses.append(loss)
+        if record:
+            self.count += bs
+            # loss /= len(self.layers)
+        loss = torch.stack(losses, dim=1)
+        return loss, output_dict
+
+    def reset(self):
+        self.count = 0
+        for layer in self.layers:
+            for head in range(self.nheads):
+                self.loss1[layer][head] = 0.
+                self.loss2[layer][head] = 0.
+                self.acc1[layer][head] = 0.
+                self.acc2[layer][head] = 0.
+
+    def get_metrics(self, reset: bool = False):
+        metrics = {}
+        if self.count > 0:
+            for layer in self.layers:
+                for head in range(self.nheads):
+                    metrics[f'loss1_{layer}_{head}'] = self.loss1[layer][head]/self.count
+                    metrics[f'loss2_{layer}_{head}'] = self.loss2[layer][head]/self.count
+                    metrics[f'acc1_{layer}_{head}'] = self.acc1[layer][head]/self.count
+                    metrics[f'acc2_{layer}_{head}'] = self.acc2[layer][head]/self.count
+        else:
+            for layer in self.layers:
+                for head in range(self.nheads):
+                    metrics[f'loss1_{layer}_{head}'] = 0.
+                    metrics[f'loss2_{layer}_{head}'] = 0.
+                    metrics[f'acc1_{layer}_{head}'] = 0.
+                    metrics[f'acc2_{layer}_{head}'] = 0.
+        if reset:
+            self.reset()
+        return metrics
 
 
 class AlignLoss(nn.Module):
@@ -694,16 +791,26 @@ class AlignListMLE(nn.Module):
         return loss, None
 
 
+class CrossEntropyLoss(nn.Module):
+    def __init__(self, mu, *args, **kwargs):
+        super(CrossEntropyLoss, self).__init__()
+        self.mu = mu
+        self.loss = nn.CrossEntropyLoss(*args, **kwargs)
+
+    def forward(self, inputs, targets):
+        return self.loss(inputs/self.mu, targets)
+
+
 SIMILARITY_FUNCTIONS = {
     'inner_product': InnerProduct, 'cosine': CosineSimilarity, 'cosface': AddMarginProduct, 'arcface': ArcMarginProduct,
     'apprank': AppRank, 'listmle': ListMLE, 'spearman': Spearman,
-    'mse': NegativeMSE, 'sse': NegativeSSE, 'kl': NegativeKLDiv
+    'mse': NegativeMSE, 'sse': NegativeSSE, 'kl': NegativeKLDiv, 'l1': NegativeL1
 }
-LOSS_FUNCTIONS = {'ce': nn.CrossEntropyLoss, 'mrl': MarginRankingLoss, 'embed': EmbeddingLoss,
+LOSS_FUNCTIONS = {'ce': CrossEntropyLoss, 'mrl': MarginRankingLoss, 'embed': EmbeddingLoss,
                   'bce': BinaryCrossEntropyLoss, 'focal': FocalLoss}
 ALIGN_MODELS = {'align4': AlignLoss, 'align16': AlignLoss16, 'cosembedding4': CosineEmbeddingAlignLoss4,
                 'l1_loss': AlignL1Loss, 'spearman_loss': AlignSpearmanLoss, 'apprank_loss': AlignAppRankLoss,
-                'listmle_loss': AlignListMLE}
+                'listmle_loss': AlignListMLE, 'align4_perhead': AlignLossPerHead}
 
 
 def get_align_model(model_params, sim_fn_params=None, loss_fn_params=None):

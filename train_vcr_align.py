@@ -43,7 +43,6 @@ import shutil
 import copy
 NUM_SPECIAL_TOKENS = 81
 torch.set_printoptions(threshold=np.inf, linewidth=1000000)
-logitorprob='scores'
 
 def build_dataloader(dataset, collate_fn, is_train, opts):
     batch_size = (opts.train_batch_size if is_train
@@ -285,7 +284,12 @@ def main(opts):
     #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
     # )
     # align_fn = get_align_model(model_params={'name': 'listmle_loss', 'alpha': args.mle_alpha ,'layers': [i for i in range(12)]})
-    align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    align_fn = get_align_model(
+        model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
+        sim_fn_params={'name': 'l1'},
+        loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
+    )
 
     running_loss = RunningMeter('loss')
     running_loss_align = RunningMeter('loss_align')
@@ -317,7 +321,7 @@ def main(opts):
 
             loss_align, out_align = align_fn(
                 att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
-                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
+                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1), record=True
             )
             lw = F.sigmoid(model.layer_weights.float())
             hw = F.sigmoid(model.head_weights.float())
@@ -541,12 +545,20 @@ def validate(model, val_loader, align_fn=None, visualize=False):
     model.train()
     align_str = ''
 
-    # if align_fn is not None:
-    #     for key, value in align_fn.get_metrics(True).items():
-    #         if 'acc' in key:
-    #             align_str += f'{key}: {value*100:.2f};'
-    #         else:
-    #             align_str += f'{key}: {value:.2f};'
+    if align_fn is not None:
+        m = align_fn.get_metrics(True)
+        for key in ('acc1', 'acc2'):
+            align_str += f'{key}:\n'
+            for layer in range(12):
+                for head in range(12):
+                    align_str += f'{m[f"{key}_{layer}_{head}"] * 100:.2f}; '
+                align_str += f'\n'
+
+        # for key, value in align_fn.get_metrics(True).items():
+        #     if 'acc' in key:
+        #         align_str += f'{key}: {value*100:.2f};'
+        #     else:
+        #         align_str += f'{key}: {value:.2f};'
     LOGGER.info(f"validation finished in {int(tot_time)} seconds, "
                 f"score_qa: {val_qa_acc*100:.2f} "
                 f"score_qar: {val_qar_acc*100:.2f} "
@@ -554,7 +566,7 @@ def validate(model, val_loader, align_fn=None, visualize=False):
                 f"loss_qa: {val_qa_loss:.2f} "
                 f"loss_qar: {val_qar_loss:.2f} "
                 f"loss_align: {loss_align:.2f}"
-                f"{align_str}")
+                f"\n{align_str}")
     return val_log, results
 
 
@@ -642,6 +654,7 @@ if __name__ == "__main__":
     parser.add_argument('--sp_alpha', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--mle_alpha', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--lr_decay_rate', type=float, default=1.0)
+    parser.add_argument('--ce_mu', type=float, default=1.0)
     parser.add_argument("--num_lr_decay_steps", default=100000, type=int,
                         help="Total number of training updates to perform.")
     parser.add_argument('--config', help='JSON config files')
