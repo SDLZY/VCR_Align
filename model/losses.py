@@ -183,6 +183,24 @@ class AppRank(nn.Module):
         return sim
 
 
+class Spearman(nn.Module):
+    def __init__(self, alpha=1.0, measure='l2'):
+        super().__init__()
+        self.alpha = alpha
+        self.measure = measure
+
+    def forward(self, input1, mask1, input2, mask2, label=None):
+        """shape (bs, 4, num_heads, n)"""
+        bs, _, nheads, nobj = input1.shape
+        input1 = input1.view(bs*4, nheads, nobj)
+        input2 = input2.view(bs*4, nheads, nobj)
+        mask1 = mask1.view(bs*4, nheads, nobj)
+        mask2 = mask2.view(bs*4, nheads, nobj)
+        dist = ltr.spearman(input1, mask1, input2, mask2, self.alpha, self.measure).view(bs, 4, nheads)
+        sim = 1 - dist
+        return sim
+
+
 class ListMLE(nn.Module):
     def __init__(self, alpha=1.0, mode='exp'):
         super().__init__()
@@ -212,41 +230,6 @@ class ListMLE(nn.Module):
         inputs_prob = torch.prod((inputs_sorted_proj + eps) / (inputs_sorted_proj_cum + eps), dim=-1)  # bs, 4, num_head
         inputs_prob = inputs_prob.permute((0, 2, 1)).contiguous()
         return inputs_prob
-
-
-class Spearman(nn.Module):
-    def __init__(self, alpha=1.0, measure='l2'):
-        super().__init__()
-        self.alpha = alpha
-        assert measure in ('l1', 'l2', 'smooth_l1')
-        if measure == 'l1':
-            self._measure = nn.L1Loss(reduction='none')
-        elif measure == 'l2':
-            self._measure = nn.MSELoss(reduction='none')
-        elif measure == 'smooth_l1':
-            self._measure = nn.SmoothL1Loss(reduction='none')
-        else:
-            raise ValueError
-
-    def forward(self, input1, mask1, input2, mask2, label=None):
-        """shape (bs, 4, num_heads, n)"""
-        # 两次排序找出元素在降序（升序）中的位置 https://blog.csdn.net/LXX516/article/details/78804884
-        input2 = torch.where(mask2 > 0, input2, input2.new_full((1,), -1E5))
-        targets_sorted_indexes = input2.sort(dim=-1, descending=True)[1].sort(dim=-1)[1].float() + 1
-        targets_sorted_indexes = targets_sorted_indexes * mask2.float()
-        _mask1 = mask1.unsqueeze(-1) * mask1.unsqueeze(-2)
-        # targets = targets.detach()
-        # targets_dist = (targets.unsqueeze(-1) - targets.unsqueeze(-2))
-        # targets_sorted_indexes = 0.5 + (torch.sigmoid(-targets_dist * self.alpha) * _mask.float()).sum(-1)
-        inputs_dist = (input1.unsqueeze(-1) - input1.unsqueeze(-2))
-        inputs_sorted_indexes = 0.5 + (torch.sigmoid(-inputs_dist * self.alpha) * _mask1.float()).sum(-1)
-        inputs_sorted_indexes = inputs_sorted_indexes * mask1.float()
-        # 需要保证padding部分数值为0且对measure函数无影响
-        dist = self._measure(targets_sorted_indexes.expand_as(inputs_sorted_indexes), inputs_sorted_indexes)
-        d = mask1.sum(-1)
-        corr = 1 - 6 * dist.sum(-1)/(d*(d**2 - 1)).float()
-        corr = corr.permute((0, 2, 1)).contiguous()
-        return corr
 
 
 class EmbeddingLoss(nn.Module):
@@ -667,7 +650,7 @@ class AlignSpearmanLoss(nn.Module):
     def __init__(self, layers, alpha=1.0, measure='l2'):
         super().__init__()
         self.alpha = alpha
-        self.layers =  layers
+        self.layers = layers
         assert measure in ('l1', 'l2', 'smooth_l1')
         if measure == 'l1':
             self._measure = nn.L1Loss(reduction='none')

@@ -646,15 +646,6 @@ if __name__ == "__main__":
 
     args = parse_with_config(parser)
 
-    if exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory ({}) already exists and is not "
-                         "empty.".format(args.output_dir))
-
-    # options safe guard
-    if args.conf_th == -1:
-        assert args.max_bb + args.max_txt_len + 2 <= 512
-    else:
-        assert args.num_bb + args.max_txt_len + 2 <= 512
 
     # for mle_alpha in (1, 0.1, 0.01):
     #     args.mle_alpha = mle_alpha
@@ -663,5 +654,14 @@ if __name__ == "__main__":
     for alpha in (1, 3, 9):
         args.alpha = alpha
         args.output_dir = f'output/align_new/base_pat5_nstep12000_align/l1_meanhead_alpha{alpha}'
+        if exists(args.output_dir) and os.listdir(args.output_dir):
+            raise ValueError("Output directory ({}) already exists and is not "
+                             "empty.".format(args.output_dir))
+
+        # options safe guard
+        if args.conf_th == -1:
+            assert args.max_bb + args.max_txt_len + 2 <= 512
+        else:
+            assert args.num_bb + args.max_txt_len + 2 <= 512
         main(args)
 

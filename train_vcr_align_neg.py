@@ -287,9 +287,14 @@ def main(opts):
     # )
     # align_fn = get_align_model(model_params={'name': 'listmle_loss', 'alpha': args.mle_alpha ,'layers': [i for i in range(12)]})
     # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    # align_fn = get_align_model(
+    #     model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
+    #     sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
+    #     loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
+    # )
     align_fn = get_align_model(
         model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
-        sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
+        sim_fn_params={'name': 'spearman', 'alpha': args.sp_alpha, 'measure': 'l2'},
         loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
     )
 
@@ -669,11 +674,11 @@ if __name__ == "__main__":
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    for app_alpha in (100, 10, 1):
+    for sp_alpha in (100, 10, 1):
         for ce_mu in (1, 0.1, 0.01):
-            args.app_alpha = app_alpha
+            args.sp_alpha = sp_alpha
             args.ce_mu = ce_mu
-            args.output_dir = f'output/align_new/base_pat5_nstep12000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
+            args.output_dir = f'output/align_new/base_pat5_nstep12000_align/spearman_neg_mu{ce_mu}_alpha{args.alpha}_spalpha{sp_alpha}'
             if exists(args.output_dir) and os.listdir(args.output_dir):
                 raise ValueError("Output directory ({}) already exists and is not "
                                  "empty.".format(args.output_dir))

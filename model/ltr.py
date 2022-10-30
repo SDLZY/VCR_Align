@@ -1,4 +1,28 @@
 import torch
+from torch.nn import functional as F
+import pdb
+
+
+def spearman(input1: torch.Tensor, mask1: torch.Tensor,
+             input2: torch.Tensor, mask2: torch.Tensor, alpha: float = 1.0, measure='l2', label=None):
+    # pdb.set_trace()
+    bs, num_heads, _ = input1.shape
+    # 两次排序找出元素在降序（升序）中的位置 https://blog.csdn.net/LXX516/article/details/78804884
+    input2 = torch.where(mask2 > 0, input2, input2.new_full((1,), -1E5))
+    targets_sorted_indexes = input2.sort(dim=-1, descending=True)[1].sort(dim=-1)[1].float() + 1
+    targets_sorted_indexes = targets_sorted_indexes * mask2.float()
+    _mask1 = mask1.unsqueeze(-1) * mask1.unsqueeze(-2)
+    att1_dist = (input1.unsqueeze(-1) - input1.unsqueeze(-2))
+    inputs_sorted_indexes = 0.5 + (torch.sigmoid(-att1_dist * alpha) * _mask1.float()).sum(-1)
+    inputs_sorted_indexes = inputs_sorted_indexes * mask1.float()
+    # pdb.set_trace()
+    if measure == 'l2':
+        dist = torch.norm(targets_sorted_indexes.expand_as(inputs_sorted_indexes) - inputs_sorted_indexes, p=1, dim=-1)
+        d = mask1.sum(-1)
+        loss = 6 * dist**2 / (d * (d ** 2 - 1)).float()
+    else:
+        raise NotImplementedError
+    return loss
 
 
 def apprank(input1: torch.Tensor, mask1: torch.Tensor,
