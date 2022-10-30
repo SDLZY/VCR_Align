@@ -253,6 +253,8 @@ def main(opts):
         model_saver = ModelSaver(join(opts.output_dir, 'ckpt'))
         os.makedirs(join(opts.output_dir, 'results'))  # store VQA predictions
         os.makedirs(join(opts.output_dir, 'figures'))  # store VQA predictions
+        for handler in list(LOGGER.handlers):
+            LOGGER.removeHandler(handler)
         add_log_to_file(join(opts.output_dir, 'log', 'log.txt'))
         os.makedirs(join(opts.output_dir, 'codes'))    # 把核心修改代码保存下来，以备后来寻找bug
         shutil.copytree('./model', join(opts.output_dir, 'codes', 'model'))
@@ -284,7 +286,12 @@ def main(opts):
     #     loss_fn_params={'name': 'ce', 'reduction': 'none'}
     # )
     # align_fn = get_align_model(model_params={'name': 'listmle_loss', 'alpha': args.mle_alpha ,'layers': [i for i in range(12)]})
-    align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
+    align_fn = get_align_model(
+        model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
+        sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
+        loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
+    )
 
     running_loss = RunningMeter('loss')
     running_loss_align = RunningMeter('loss_align')
@@ -316,15 +323,12 @@ def main(opts):
 
             loss_align, out_align = align_fn(
                 att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
-                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
+                att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1), record=True
             )
             lw = F.sigmoid(model.layer_weights.float())
             hw = F.sigmoid(model.head_weights.float())
-            # import pdb; pdb.set_trace()
             loss_align = loss_align * lw.view(1, -1, 1) * hw.view(1, 1, -1)
-            # loss_align = loss_align.mean(-1) * lw.unsqueeze(1)
             loss_align = loss_align.mean()
-            # loss_reg = - model.layer_weights.float().mean()
             loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
             # loss_align = loss_align.mean()
 
@@ -543,12 +547,20 @@ def validate(model, val_loader, align_fn=None, visualize=False):
     model.train()
     align_str = ''
 
-    # if align_fn is not None:
-    #     for key, value in align_fn.get_metrics(True).items():
-    #         if 'acc' in key:
-    #             align_str += f'{key}: {value*100:.2f};'
-    #         else:
-    #             align_str += f'{key}: {value:.2f};'
+    if align_fn is not None:
+        m = align_fn.get_metrics(True)
+        for key in ('acc1', 'acc2'):
+            align_str += f'{key}:\n'
+            for layer in range(12):
+                for head in range(12):
+                    align_str += f'{m[f"{key}_{layer}_{head}"] * 100:.2f}; '
+                align_str += f'\n'
+
+        # for key, value in align_fn.get_metrics(True).items():
+        #     if 'acc' in key:
+        #         align_str += f'{key}: {value*100:.2f};'
+        #     else:
+        #         align_str += f'{key}: {value:.2f};'
     LOGGER.info(f"validation finished in {int(tot_time)} seconds, "
                 f"score_qa: {val_qa_acc*100:.2f} "
                 f"score_qar: {val_qar_acc*100:.2f} "
@@ -556,7 +568,7 @@ def validate(model, val_loader, align_fn=None, visualize=False):
                 f"loss_qa: {val_qa_loss:.2f} "
                 f"loss_qar: {val_qar_loss:.2f} "
                 f"loss_align: {loss_align:.2f}"
-                f"{align_str}")
+                f"\n{align_str}")
     return val_log, results
 
 
@@ -641,28 +653,36 @@ if __name__ == "__main__":
     # can use config files
     parser.add_argument('--alpha', type=float, default=1.0, help='weight of align loss')
     parser.add_argument('--gamma', type=float, default=1.0, help='weight of align coefficient')
+    parser.add_argument('--app_alpha', type=float, default=1.0)
     parser.add_argument('--sp_alpha', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--mle_alpha', type=float, default=1.0, help='weight of align coefficient')
     parser.add_argument('--lr_decay_rate', type=float, default=1.0)
+    parser.add_argument('--ce_mu', type=float, default=1.0)
     parser.add_argument("--num_lr_decay_steps", default=100000, type=int,
                         help="Total number of training updates to perform.")
     parser.add_argument('--config', help='JSON config files')
 
     args = parse_with_config(parser)
 
-    if exists(args.output_dir) and os.listdir(args.output_dir):
-        raise ValueError("Output directory ({}) already exists and is not "
-                         "empty.".format(args.output_dir))
-
-    # options safe guard
-    if args.conf_th == -1:
-        assert args.max_bb + args.max_txt_len + 2 <= 512
-    else:
-        assert args.num_bb + args.max_txt_len + 2 <= 512
 
     # for mle_alpha in (1, 0.1, 0.01):
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    main(args)
+    for app_alpha in (100, 10, 1):
+        for ce_mu in (1, 0.1, 0.01):
+            args.app_alpha = app_alpha
+            args.ce_mu = ce_mu
+            args.output_dir = f'output/align_new/base_pat5_nstep12000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
+            if exists(args.output_dir) and os.listdir(args.output_dir):
+                raise ValueError("Output directory ({}) already exists and is not "
+                                 "empty.".format(args.output_dir))
+
+            # options safe guard
+            if args.conf_th == -1:
+                assert args.max_bb + args.max_txt_len + 2 <= 512
+            else:
+                assert args.num_bb + args.max_txt_len + 2 <= 512
+            main(args)
+    # main(args)
 

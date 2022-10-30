@@ -43,6 +43,17 @@ class NegativeL1(nn.Module):
         return -dist
 
 
+class NegativeL2(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, input1, mask1, input2, mask2, label=None):
+        input1 = input1 * mask1.float()
+        input2 = input2 * mask2.float()
+        dist = (((input1 - input2)**2) * mask1.float()).sum(-1)**0.5
+        return -dist
+
+
 class NegativeMSE(nn.Module):
     """mean square error"""
     def __init__(self):
@@ -161,32 +172,15 @@ class AppRank(nn.Module):
         self.alpha = alpha
 
     def forward(self, input1, mask1, input2, mask2, label=None):
-        """input1 shape (bs, 4, head, dim), input2 shape (bs, 1, head, dim)"""
-        bs, _, num_heads, _ = input1.shape
-        input1 = input1.permute((0, 2, 1, 3)).contiguous().view(bs*num_heads, 4, -1)
-        mask1 = mask1.permute((0, 2, 1, 3)).contiguous().view(bs*num_heads, 4, -1)
-        input2 = input2.permute((0, 2, 1, 3)).contiguous().view(bs*num_heads, 1, -1)
-        mask2 = mask2.permute((0, 2, 1, 3)).contiguous().view(bs*num_heads, 1, -1)
-
-        input1 = input1 * mask1.float()
-        input2 = (input2 * mask2.float()).detach()
-
-        diff = input1.unsqueeze(-1) - input1.unsqueeze(-2)
-        diff = torch.sigmoid(-diff * self.alpha)  # b, 4, n, n
-
-        mask1_ = mask1.unsqueeze(-1) * mask1.unsqueeze(-2)
-        pi = 0.5 + (diff * mask1_.float()).sum(-1)  # b, 4, n
-        app_dcg = input2.exp() / (1 + pi).log()
-        app_dcg = (app_dcg * mask1.float()).sum(-1)
-
-        input2 = torch.where(mask2 > 0, input2, input2.new_full((1,), -1E5))
-        input2_sort, input2_sorted_indices = input2.sort(-1, descending=True)
-        mask2 = torch.gather(mask2, dim=-1, index=input2_sorted_indices)
-        idcg = input2_sort.exp() / torch.arange(2, input2.shape[-1]+2, device=input2.device).float().log()
-        idcg = (idcg * mask2.float()).sum(-1)
-        ndcg = app_dcg / idcg
-        ndcg = ndcg.view(bs, num_heads, -1)
-        return ndcg
+        """input1 shape (bs, 4, head, dim), input2 shape (bs, 4, head, dim)"""
+        bs, _, nheads, nobj = input1.shape
+        input1 = input1.view(bs*4, nheads, nobj)
+        input2 = input2.view(bs*4, nheads, nobj)
+        mask1 = mask1.view(bs*4, nheads, nobj)
+        mask2 = mask2.view(bs*4, nheads, nobj)
+        dist = ltr.apprank(input1, mask1, input2, mask2, self.alpha).view(bs, 4, nheads)
+        sim = 1 - dist
+        return sim
 
 
 class ListMLE(nn.Module):
@@ -798,13 +792,14 @@ class CrossEntropyLoss(nn.Module):
         self.loss = nn.CrossEntropyLoss(*args, **kwargs)
 
     def forward(self, inputs, targets):
+        # import pdb; pdb.set_trace()
         return self.loss(inputs/self.mu, targets)
 
 
 SIMILARITY_FUNCTIONS = {
     'inner_product': InnerProduct, 'cosine': CosineSimilarity, 'cosface': AddMarginProduct, 'arcface': ArcMarginProduct,
     'apprank': AppRank, 'listmle': ListMLE, 'spearman': Spearman,
-    'mse': NegativeMSE, 'sse': NegativeSSE, 'kl': NegativeKLDiv, 'l1': NegativeL1
+    'mse': NegativeMSE, 'sse': NegativeSSE, 'kl': NegativeKLDiv, 'l1': NegativeL1, 'l2': NegativeL2
 }
 LOSS_FUNCTIONS = {'ce': CrossEntropyLoss, 'mrl': MarginRankingLoss, 'embed': EmbeddingLoss,
                   'bce': BinaryCrossEntropyLoss, 'focal': FocalLoss}

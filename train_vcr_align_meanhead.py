@@ -253,6 +253,8 @@ def main(opts):
         model_saver = ModelSaver(join(opts.output_dir, 'ckpt'))
         os.makedirs(join(opts.output_dir, 'results'))  # store VQA predictions
         os.makedirs(join(opts.output_dir, 'figures'))  # store VQA predictions
+        for handler in list(LOGGER.handlers):
+            LOGGER.removeHandler(handler)
         add_log_to_file(join(opts.output_dir, 'log', 'log.txt'))
         os.makedirs(join(opts.output_dir, 'codes'))    # 把核心修改代码保存下来，以备后来寻找bug
         shutil.copytree('./model', join(opts.output_dir, 'codes', 'model'))
@@ -319,13 +321,10 @@ def main(opts):
                 att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1),
             )
             lw = F.sigmoid(model.layer_weights.float())
-            hw = F.sigmoid(model.head_weights.float())
             # import pdb; pdb.set_trace()
-            loss_align = loss_align * lw.view(1, -1, 1) * hw.view(1, 1, -1)
-            # loss_align = loss_align.mean(-1) * lw.unsqueeze(1)
+            loss_align = loss_align.mean(-1) * lw.unsqueeze(0)
             loss_align = loss_align.mean()
-            # loss_reg = - model.layer_weights.float().mean()
-            loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
+            loss_reg = - model.layer_weights.float().mean()
             # loss_align = loss_align.mean()
 
             # loss = loss_qa*0.5 + loss_qar*0.5
@@ -351,9 +350,6 @@ def main(opts):
                     fp.write('layer weights')
                     for i in range(12):
                         fp.write(f'{lw[i].item():.2f} ')
-                    fp.write('head weights')
-                    for i in range(12):
-                        fp.write(f'{hw[i].item():.2f} ')
                     fp.write('\n')
 
                 global_step += 1
@@ -664,5 +660,8 @@ if __name__ == "__main__":
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    main(args)
+    for alpha in (1, 3, 9):
+        args.alpha = alpha
+        args.output_dir = f'output/align_new/base_pat5_nstep12000_align/l1_meanhead_alpha{alpha}'
+        main(args)
 
