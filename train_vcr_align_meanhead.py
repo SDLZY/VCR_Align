@@ -406,13 +406,13 @@ def main(opts):
         val_log, results = validate(
             model, val_dataloader)
         TB_LOGGER.log_scaler_dict(val_log)
-    val_log, results = validate(model, val_final_dataloader)
-    with open(f'{opts.output_dir}/results/'
-              f'results_{global_step}_final_qa_qar_'
-              f'rank{rank}.json', 'w') as f:
-        json.dump(results, f)
-    TB_LOGGER.log_scaler_dict(val_log)
-    model_saver.save(model, global_step)
+    # val_log, results = validate(model, val_final_dataloader)
+    # with open(f'{opts.output_dir}/results/'
+    #           f'results_{global_step}_final_qa_qar_'
+    #           f'rank{rank}.json', 'w') as f:
+    #     json.dump(results, f)
+    # TB_LOGGER.log_scaler_dict(val_log)
+    # model_saver.save(model, global_step)
 
 
 def compute_accuracies(out_qa, labels_qa, out_qar, labels_qar):
@@ -651,7 +651,7 @@ if __name__ == "__main__":
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    for alpha in (1, 3, 9):
+    for alpha in (3, 9):
         args.alpha = alpha
         args.output_dir = f'output/align_new/base_pat5_nstep12000_align/l1_meanhead_alpha{alpha}'
         if exists(args.output_dir) and os.listdir(args.output_dir):
