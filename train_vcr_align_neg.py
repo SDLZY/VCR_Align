@@ -674,8 +674,8 @@ if __name__ == "__main__":
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    for app_alpha in (100,):
-        for ce_mu in (0.1, 0.01):
+    for app_alpha in (10,):
+        for ce_mu in (1, 0.1, 0.01):
             args.app_alpha = app_alpha
             args.ce_mu = ce_mu
             args.output_dir = f'output/align_new/base_pat5_nstep10000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
