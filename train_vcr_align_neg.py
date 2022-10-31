@@ -678,7 +678,7 @@ if __name__ == "__main__":
         for ce_mu in (0.1, 0.01):
             args.app_alpha = app_alpha
             args.ce_mu = ce_mu
-            args.output_dir = f'output/align_new/base_pat5_nstep12000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
+            args.output_dir = f'output/align_new/base_pat5_nstep10000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
             if exists(args.output_dir) and os.listdir(args.output_dir):
                 raise ValueError("Output directory ({}) already exists and is not "
                                  "empty.".format(args.output_dir))
