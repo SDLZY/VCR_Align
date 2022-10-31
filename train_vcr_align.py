@@ -348,10 +348,10 @@ def main(opts):
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
                 with open(os.path.join(args.output_dir, 'align_weight.txt'), 'a') as fp:
-                    fp.write('layer weights')
+                    fp.write('layer weights: ')
                     for i in range(12):
                         fp.write(f'{lw[i].item():.2f} ')
-                    fp.write('head weights')
+                    fp.write('head weights: ')
                     for i in range(12):
                         fp.write(f'{hw[i].item():.2f} ')
                     fp.write('\n')

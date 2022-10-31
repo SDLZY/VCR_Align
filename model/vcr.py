@@ -21,8 +21,10 @@ class UniterForVisualCommonsenseReasoning(UniterPreTrainedModel):
     """
     def __init__(self, config, img_dim):
         super().__init__(config, img_dim)
-        self.layer_weights = nn.Parameter(torch.randn(config.num_hidden_layers))
-        self.head_weights = nn.Parameter(torch.randn(config.num_attention_heads))
+        # self.layer_weights = nn.Parameter(torch.randn(config.num_hidden_layers))
+        # self.head_weights = nn.Parameter(torch.randn(config.num_attention_heads))
+        self.layer_weights = nn.Parameter(torch.zeros(config.num_hidden_layers))
+        self.head_weights = nn.Parameter(torch.zeros(config.num_attention_heads))
         self.uniter = UniterModel(config, img_dim)
         self.vcr_output = nn.Sequential(
             nn.Linear(config.hidden_size, config.hidden_size*2),
