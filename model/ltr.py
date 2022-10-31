@@ -1,3 +1,5 @@
+import random
+
 import torch
 from torch.nn import functional as F
 import pdb
@@ -37,6 +39,8 @@ def apprank(input1: torch.Tensor, mask1: torch.Tensor,
 
     diff = input1.unsqueeze(-1) - input1.unsqueeze(-2)
     diff = torch.sigmoid(-diff * alpha)  # b, heads, n, n
+    if random.random() < 0.0001:
+        print('APPRank diff: ', diff[0, 0, 0].tolist())
 
     mask1_ = mask1.unsqueeze(-1) * mask1.unsqueeze(-2)  # b, 1, n, n
     pi = 0.5 + (diff * mask1_.float()).sum(-1)  # b, heads, n

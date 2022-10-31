@@ -1,9 +1,11 @@
 import math
+import random
 from typing import Dict
 import torch
 from torch import nn
 from torch.nn import functional as F
 from . import ltr
+import pdb
 
 
 class InnerProduct(nn.Module):
@@ -332,25 +334,27 @@ class AlignLossPerHead(nn.Module):
             att2_gt = att2_gt.unsqueeze(1).repeat(1, 4, 1, 1)
             sim1 = self.sim_fn(att1, att1_mask, att2_gt, att2_mask)  # bs, 4, nheads
             sim2 = self.sim_fn(att2, att2_mask, att1_gt, att1_mask)
-            losses_ = []
+            sim1 = sim1.permute(0, 2, 1).contiguous().view(-1, 4)
+            sim2 = sim2.permute(0, 2, 1).contiguous().view(-1, 4)
+            _target1 = target1.unsqueeze(-1).repeat(1, nheads).view(-1)
+            _target2 = target2.unsqueeze(-1).repeat(1, nheads).view(-1)
+            loss1 = self.loss_fn(sim1, _target1).view(bs, nheads)
+            loss2 = self.loss_fn(sim2, _target2).view(bs, nheads)
+            loss = 0.5 * (loss1 + loss2)
+            losses.append(loss)
+
+            acc1 = (sim1.argmax(-1) == _target1).float().view(bs, nheads)
+            acc2 = (sim2.argmax(-1) == _target2).float().view(bs, nheads)
             for head in range(self.nheads):
-                sim1_h = sim1[:, :, head]  # bs, 4
-                sim2_h = sim2[:, :, head]
-                loss1 = self.loss_fn(sim1_h, target1)  # bs
-                loss2 = self.loss_fn(sim2_h, target2)  # bs
-                loss = (loss1 + loss2) / 2
-                losses_.append(loss)
-                output_dict[f'loss1_{layer}_{head}'] = loss1.mean().item()
-                output_dict[f'loss2_{layer}_{head}'] = loss2.mean().item()
-                output_dict[f'acc1_{layer}_{head}'] = (sim1_h.argmax(-1) == target1).float().mean().item()
-                output_dict[f'acc2_{layer}_{head}'] = (sim2_h.argmax(-1) == target2).float().mean().item()
+                output_dict[f'loss1_{layer}_{head}'] = loss1[:, head].mean().item()
+                output_dict[f'loss2_{layer}_{head}'] = loss2[:, head].mean().item()
+                output_dict[f'acc1_{layer}_{head}'] = acc1[:, head].mean().item()
+                output_dict[f'acc2_{layer}_{head}'] = acc2[:, head].mean().item()
                 if record:
                     self.loss1[layer][head] += output_dict[f'loss1_{layer}_{head}'] * bs
                     self.loss2[layer][head] += output_dict[f'loss2_{layer}_{head}'] * bs
                     self.acc1[layer][head] += output_dict[f'acc1_{layer}_{head}'] * bs
                     self.acc2[layer][head] += output_dict[f'acc2_{layer}_{head}'] * bs
-            loss = torch.stack(losses_, dim=1)
-            losses.append(loss)
         if record:
             self.count += bs
             # loss /= len(self.layers)
@@ -776,6 +780,8 @@ class CrossEntropyLoss(nn.Module):
 
     def forward(self, inputs, targets):
         # import pdb; pdb.set_trace()
+        if random.random() < 0.0001:
+            print('CELoss softmax: ', F.softmax(inputs[0]/self.mu).tolist())
         return self.loss(inputs/self.mu, targets)
 
 

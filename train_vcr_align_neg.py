@@ -287,16 +287,16 @@ def main(opts):
     # )
     # align_fn = get_align_model(model_params={'name': 'listmle_loss', 'alpha': args.mle_alpha ,'layers': [i for i in range(12)]})
     # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
-    # align_fn = get_align_model(
-    #     model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
-    #     sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
-    #     loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
-    # )
     align_fn = get_align_model(
         model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
-        sim_fn_params={'name': 'spearman', 'alpha': args.sp_alpha, 'measure': 'l2'},
+        sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
         loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
     )
+    # align_fn = get_align_model(
+    #     model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
+    #     sim_fn_params={'name': 'spearman', 'alpha': args.sp_alpha, 'measure': 'l2'},
+    #     loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
+    # )
 
     running_loss = RunningMeter('loss')
     running_loss_align = RunningMeter('loss_align')
@@ -419,13 +419,13 @@ def main(opts):
         val_log, results = validate(
             model, val_dataloader)
         TB_LOGGER.log_scaler_dict(val_log)
-    val_log, results = validate(model, val_final_dataloader)
-    with open(f'{opts.output_dir}/results/'
-              f'results_{global_step}_final_qa_qar_'
-              f'rank{rank}.json', 'w') as f:
-        json.dump(results, f)
-    TB_LOGGER.log_scaler_dict(val_log)
-    model_saver.save(model, global_step)
+    # val_log, results = validate(model, val_final_dataloader)
+    # with open(f'{opts.output_dir}/results/'
+    #           f'results_{global_step}_final_qa_qar_'
+    #           f'rank{rank}.json', 'w') as f:
+    #     json.dump(results, f)
+    # TB_LOGGER.log_scaler_dict(val_log)
+    # model_saver.save(model, global_step)
 
 
 def compute_accuracies(out_qa, labels_qa, out_qar, labels_qar):
@@ -674,11 +674,11 @@ if __name__ == "__main__":
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    for sp_alpha in (100, 10, 1):
-        for ce_mu in (1, 0.1, 0.01):
-            args.sp_alpha = sp_alpha
+    for app_alpha in (100,):
+        for ce_mu in (0.1, 0.01):
+            args.app_alpha = app_alpha
             args.ce_mu = ce_mu
-            args.output_dir = f'output/align_new/base_pat5_nstep12000_align/spearman_neg_mu{ce_mu}_alpha{args.alpha}_spalpha{sp_alpha}'
+            args.output_dir = f'output/align_new/base_pat5_nstep12000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
             if exists(args.output_dir) and os.listdir(args.output_dir):
                 raise ValueError("Output directory ({}) already exists and is not "
                                  "empty.".format(args.output_dir))
@@ -689,5 +689,24 @@ if __name__ == "__main__":
             else:
                 assert args.num_bb + args.max_txt_len + 2 <= 512
             main(args)
+            # try:
+            #     main(args)
+            # except Exception as ex:
+            #     print(ex)
+    # for sp_alpha in (100, 10, 1):
+    #     for ce_mu in (1, 0.1, 0.01):
+    #         args.sp_alpha = sp_alpha
+    #         args.ce_mu = ce_mu
+    #         args.output_dir = f'output/align_new/base_pat5_nstep12000_align/spearman_neg_mu{ce_mu}_alpha{args.alpha}_spalpha{sp_alpha}'
+    #         if exists(args.output_dir) and os.listdir(args.output_dir):
+    #             raise ValueError("Output directory ({}) already exists and is not "
+    #                              "empty.".format(args.output_dir))
+    #
+    #         # options safe guard
+    #         if args.conf_th == -1:
+    #             assert args.max_bb + args.max_txt_len + 2 <= 512
+    #         else:
+    #             assert args.num_bb + args.max_txt_len + 2 <= 512
+    #         main(args)
     # main(args)
 
