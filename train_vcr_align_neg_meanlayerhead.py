@@ -335,16 +335,16 @@ def main(opts):
                 att_qa, att_qa_mask, batch_qa['targets'].reshape(-1, 4).argmax(-1),
                 att_qar, att_qar_mask, batch_qar['targets'].reshape(-1, 4).argmax(-1), record=True
             )
-            lw = F.sigmoid(model.layer_weights.float())
-            hw = F.sigmoid(model.head_weights.float())
-            loss_align = loss_align * lw.view(1, -1, 1) * hw.view(1, 1, -1)
+            # lw = F.sigmoid(model.layer_weights.float())
+            # hw = F.sigmoid(model.head_weights.float())
+            # loss_align = loss_align * lw.view(1, -1, 1) * hw.view(1, 1, -1)
             loss_align = loss_align.mean()
-            loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
+            # loss_reg = - model.layer_weights.float().mean() - model.head_weights.float().mean()
             # loss_align = loss_align.mean()
 
             # loss = loss_qa*0.5 + loss_qar*0.5
-            # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
-            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
+            loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha
+            # loss = loss_qa*0.5 + loss_qar*0.5 + loss_align * opts.alpha + loss_reg * opts.gamma
             delay_unscale = (step+1) % opts.gradient_accumulation_steps != 0
             with amp.scale_loss(loss, optimizer, delay_unscale=delay_unscale
                                 ) as scaled_loss:
@@ -361,15 +361,6 @@ def main(opts):
             running_loss_align(loss_align.item())
 
             if (step + 1) % opts.gradient_accumulation_steps == 0:
-                with open(os.path.join(args.output_dir, 'align_weight.txt'), 'a') as fp:
-                    fp.write('layer weights')
-                    for i in range(12):
-                        fp.write(f'{lw[i].item():.2f} ')
-                    fp.write('head weights')
-                    for i in range(12):
-                        fp.write(f'{hw[i].item():.2f} ')
-                    fp.write('\n')
-
                 global_step += 1
 
                 # learning rate scheduling
@@ -685,7 +676,7 @@ if __name__ == "__main__":
     # main(args)
     for ce_mu in (1, 0.3, 0.1):
         args.ce_mu = ce_mu
-        args.output_dir = f'output/align_new/base_pat5_nstep10000_align/cos_neg_mu{ce_mu}_alpha{args.alpha}'
+        args.output_dir = f'output/align_new/base_pat5_nstep10000_align/meanlayerhead/cos_neg_mu{ce_mu}_alpha{args.alpha}'
         if exists(args.output_dir) and os.listdir(args.output_dir):
             raise ValueError("Output directory ({}) already exists and is not "
                              "empty.".format(args.output_dir))

@@ -29,7 +29,8 @@ class CosineSimilarity(nn.Module):
         input2 = input2 * mask2.float()
         input1 = F.normalize(input1, dim=-1)
         input2 = F.normalize(input2, dim=-1)
-        cosine = torch.matmul(input1, input2.transpose(-1, -2))
+        # cosine = torch.matmul(input1, input2.transpose(-1, -2))
+        cosine = (input1 * input2).sum(-1)
         # z = z / (x.norm(2, -1, keepdim=True) * y.norm(2, -1, keepdim=True))
         return cosine
 
@@ -332,6 +333,7 @@ class AlignLossPerHead(nn.Module):
             att2_gt = att2[torch.arange(bs), target2.long()] * att2_mask[:, 0].float()
             att1_gt = att1_gt.unsqueeze(1).repeat(1, 4, 1, 1)
             att2_gt = att2_gt.unsqueeze(1).repeat(1, 4, 1, 1)
+            # pdb.set_trace()
             sim1 = self.sim_fn(att1, att1_mask, att2_gt, att2_mask)  # bs, 4, nheads
             sim2 = self.sim_fn(att2, att2_mask, att1_gt, att1_mask)
             sim1 = sim1.permute(0, 2, 1).contiguous().view(-1, 4)
