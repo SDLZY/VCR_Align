@@ -93,10 +93,21 @@ def build_aligned_dataloader(dataset_qa, dataset_qar, collate_fn, is_train, opts
 def build_optimizer(model, opts):
     """ vqa linear may get larger learning rate; bias, layer norm不加weight decay """
     no_decay = ['bias', 'LayerNorm.bias', 'LayerNorm.weight']
-    param_optimizer = [(n, p) for n, p in model.named_parameters()
-                       if 'vcr_output' not in n]
-    param_top = [(n, p) for n, p in model.named_parameters()
-                 if 'vcr_output' in n]
+    param_optimizer = []
+    param_top = []
+    param_learnable_weights = []
+    for n, p in model.named_parameters():
+        if n.startswith('layer_weights') or n.startswith('head_weights'):
+            param_learnable_weights.append((n, p))
+        else:
+            if 'vcr_output' not in n:
+                param_optimizer.append((n, p))
+            else:
+                param_top.append((n, p))
+    # param_optimizer = [(n, p) for n, p in model.named_parameters()
+    #                    if 'vcr_output' not in n]
+    # param_top = [(n, p) for n, p in model.named_parameters()
+    #              if 'vcr_output' in n]
     optimizer_grouped_parameters = [
         {'params': [p for n, p in param_top
                     if not any(nd in n for nd in no_decay)],
@@ -111,6 +122,9 @@ def build_optimizer(model, opts):
          'weight_decay': opts.weight_decay},
         {'params': [p for n, p in param_optimizer
                     if any(nd in n for nd in no_decay)],
+         'weight_decay': 0.0},
+        {'params': [p for n, p in param_learnable_weights],
+         'lr': opts.lr_learnable_weights,
          'weight_decay': 0.0}
     ]
 
@@ -350,10 +364,10 @@ def main(opts):
                 with open(os.path.join(args.output_dir, 'align_weight.txt'), 'a') as fp:
                     fp.write('layer weights: ')
                     for i in range(12):
-                        fp.write(f'{lw[i].item():.2f} ')
+                        fp.write(f'{lw[i].item():.10f} ')
                     fp.write('head weights: ')
                     for i in range(12):
-                        fp.write(f'{hw[i].item():.2f} ')
+                        fp.write(f'{hw[i].item():.10f} ')
                     fp.write('\n')
 
                 global_step += 1
@@ -365,6 +379,8 @@ def main(opts):
                         param_group['lr'] = lr_this_step * opts.lr_mul
                     elif i == 2 or i == 3:
                         param_group['lr'] = lr_this_step
+                    elif i == 4:
+                        param_group['lr'] = opts.lr_learnable_weights * lr_this_step/opts.learning_rate
                     else:
                         raise ValueError()
                 TB_LOGGER.add_scalar('lr', lr_this_step, global_step)
@@ -410,13 +426,13 @@ def main(opts):
         val_log, results = validate(
             model, val_dataloader)
         TB_LOGGER.log_scaler_dict(val_log)
-    val_log, results = validate(model, val_final_dataloader)
-    with open(f'{opts.output_dir}/results/'
-              f'results_{global_step}_final_qa_qar_'
-              f'rank{rank}.json', 'w') as f:
-        json.dump(results, f)
-    TB_LOGGER.log_scaler_dict(val_log)
-    model_saver.save(model, global_step)
+    # val_log, results = validate(model, val_final_dataloader)
+    # with open(f'{opts.output_dir}/results/'
+    #           f'results_{global_step}_final_qa_qar_'
+    #           f'rank{rank}.json', 'w') as f:
+    #     json.dump(results, f)
+    # TB_LOGGER.log_scaler_dict(val_log)
+    # model_saver.save(model, global_step)
 
 
 def compute_accuracies(out_qa, labels_qa, out_qar, labels_qar):
@@ -646,6 +662,7 @@ if __name__ == "__main__":
     parser.add_argument('--lr_decay_rate', type=float, default=1.0)
     parser.add_argument("--num_lr_decay_steps", default=100000, type=int,
                         help="Total number of training updates to perform.")
+    parser.add_argument("--lr_learnable_weights", default=3e-5, type=float)
     parser.add_argument('--config', help='JSON config files')
 
     args = parse_with_config(parser)
@@ -660,6 +677,19 @@ if __name__ == "__main__":
     else:
         assert args.num_bb + args.max_txt_len + 2 <= 512
 
+    for alpha in (6, 9):
+        args.alpha = alpha
+        args.output_dir = f'output/st10000/l1_probs_zero_init_lr1_alpha{args.alpha}_gamma0.001'
+        if exists(args.output_dir) and os.listdir(args.output_dir):
+            raise ValueError("Output directory ({}) already exists and is not "
+                             "empty.".format(args.output_dir))
+
+        # options safe guard
+        if args.conf_th == -1:
+            assert args.max_bb + args.max_txt_len + 2 <= 512
+        else:
+            assert args.num_bb + args.max_txt_len + 2 <= 512
+        main(args)
     # for mle_alpha in (1, 0.1, 0.01):
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
