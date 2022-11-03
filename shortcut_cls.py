@@ -3,9 +3,10 @@ import os
 from tqdm import tqdm
 import numpy as np
 import pandas as pd
+import pdb
 
 
-data_dir = 'output/align_new/base_pat5_nstep8000_align/alpha0.1_gamma5/ckpt/'
+data_dir = 'output/align_new/base_pat5_nstep12000_align/l1_probs_neg_mu0.1_alpha0.1/ckpt/'
 
 
 def get_att(data, choice):
@@ -51,6 +52,7 @@ if __name__ == '__main__':
             results.append(att_map)
 
     results = np.array(results)
+    pdb.set_trace()
     print(results.shape)
     # print(results)
     np.save(os.path.join(data_dir, 'qav_att_map.npy'), results)

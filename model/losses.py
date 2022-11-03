@@ -25,6 +25,7 @@ class CosineSimilarity(nn.Module):
 
     def forward(self, input1: torch.Tensor, mask1: torch.Tensor,
                 input2: torch.Tensor, mask2: torch.Tensor, label=None):
+        # pdb.set_trace()
         input1 = input1 * mask1.float()
         input2 = input2 * mask2.float()
         input1 = F.normalize(input1, dim=-1)
@@ -329,6 +330,7 @@ class AlignLossPerHead(nn.Module):
             att2 = att2_dict[layer]
             # att1_mask = att1_mask[:, 0]
             # att2_mask = att2_mask[:, 0]
+            # pdb.set_trace()
             att1_gt = att1[torch.arange(bs), target1.long()] * att1_mask[:, 0].float()  # bs, nheads, -1
             att2_gt = att2[torch.arange(bs), target2.long()] * att2_mask[:, 0].float()
             att1_gt = att1_gt.unsqueeze(1).repeat(1, 4, 1, 1)
@@ -781,7 +783,7 @@ class CrossEntropyLoss(nn.Module):
         self.loss = nn.CrossEntropyLoss(*args, **kwargs)
 
     def forward(self, inputs, targets):
-        # import pdb; pdb.set_trace()
+        # pdb.set_trace()
         if random.random() < 0.0001:
             print('CELoss softmax: ', F.softmax(inputs[0]/self.mu).tolist())
         return self.loss(inputs/self.mu, targets)

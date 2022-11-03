@@ -287,16 +287,16 @@ def main(opts):
     # )
     # align_fn = get_align_model(model_params={'name': 'listmle_loss', 'alpha': args.mle_alpha ,'layers': [i for i in range(12)]})
     # align_fn = get_align_model(model_params={'name': 'l1_loss', 'layers': [i for i in range(12)]})
-    align_fn = get_align_model(
-        model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
-        sim_fn_params={'name': 'cosine'},
-        loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
-    )
     # align_fn = get_align_model(
     #     model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
-    #     sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
+    #     sim_fn_params={'name': 'cosine'},
     #     loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
     # )
+    align_fn = get_align_model(
+        model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
+        sim_fn_params={'name': 'apprank', 'alpha': args.app_alpha},
+        loss_fn_params={'name': 'ce', 'reduction': 'none', 'mu': args.ce_mu}
+    )
     # align_fn = get_align_model(
     #     model_params={'name': 'align4_perhead', 'layers': list(range(12)), 'nheads': 12},
     #     sim_fn_params={'name': 'spearman', 'alpha': args.sp_alpha, 'measure': 'l2'},
@@ -683,38 +683,39 @@ if __name__ == "__main__":
     # else:
     #     assert args.num_bb + args.max_txt_len + 2 <= 512
     # main(args)
-    for ce_mu in (1, 0.3, 0.1):
-        args.ce_mu = ce_mu
-        args.output_dir = f'output/align_new/base_pat5_nstep10000_align/cos_neg_mu{ce_mu}_alpha{args.alpha}'
-        if exists(args.output_dir) and os.listdir(args.output_dir):
-            raise ValueError("Output directory ({}) already exists and is not "
-                             "empty.".format(args.output_dir))
+    # for ce_mu in (1, 0.3, 0.1):
+    #     args.ce_mu = ce_mu
+    #     args.output_dir = f'output/align_new/base_pat5_nstep10000_align/cos_neg_mu{ce_mu}_alpha{args.alpha}'
+    #     if exists(args.output_dir) and os.listdir(args.output_dir):
+    #         raise ValueError("Output directory ({}) already exists and is not "
+    #                          "empty.".format(args.output_dir))
+    #
+    #     # options safe guard
+    #     if args.conf_th == -1:
+    #         assert args.max_bb + args.max_txt_len + 2 <= 512
+    #     else:
+    #         assert args.num_bb + args.max_txt_len + 2 <= 512
+    #     main(args)
 
-        # options safe guard
-        if args.conf_th == -1:
-            assert args.max_bb + args.max_txt_len + 2 <= 512
-        else:
-            assert args.num_bb + args.max_txt_len + 2 <= 512
-        main(args)
     # for mle_alpha in (1, 0.1, 0.01):
     #     args.mle_alpha = mle_alpha
     #     args.output_dir += f'_mlealpha{mle_alpha}'
     #     main(args)
-    # for app_alpha in (100,):
-    #     for ce_mu in (1, 0.1, 0.01):
-    #         args.app_alpha = app_alpha
-    #         args.ce_mu = ce_mu
-    #         args.output_dir = f'output/align_new/base_pat5_nstep10000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
-    #         if exists(args.output_dir) and os.listdir(args.output_dir):
-    #             raise ValueError("Output directory ({}) already exists and is not "
-    #                              "empty.".format(args.output_dir))
-    #
-    #         # options safe guard
-    #         if args.conf_th == -1:
-    #             assert args.max_bb + args.max_txt_len + 2 <= 512
-    #         else:
-    #             assert args.num_bb + args.max_txt_len + 2 <= 512
-    #         main(args)
+    for app_alpha in (1,):
+        for ce_mu in (1, 0.1, 0.01):
+            args.app_alpha = app_alpha
+            args.ce_mu = ce_mu
+            args.output_dir = f'output/align_new/base_pat5_nstep10000_align/apprank_neg_mu{ce_mu}_alpha{args.alpha}_appalpha{app_alpha}'
+            if exists(args.output_dir) and os.listdir(args.output_dir):
+                raise ValueError("Output directory ({}) already exists and is not "
+                                 "empty.".format(args.output_dir))
+
+            # options safe guard
+            if args.conf_th == -1:
+                assert args.max_bb + args.max_txt_len + 2 <= 512
+            else:
+                assert args.num_bb + args.max_txt_len + 2 <= 512
+            main(args)
             # try:
             #     main(args)
             # except Exception as ex:

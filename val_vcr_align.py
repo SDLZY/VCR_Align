@@ -302,7 +302,7 @@ def validate(model, val_loader, align_fn=None, visualize=False):
             #     drawer_qar = get_attention_drawer(os.path.join(dirname, f'attention_map_qar_{n_ex}.png'))
             scores1, att_qa, att_qa_mask = model(batch_qa, compute_loss=False, output_attention=True, draw_attention=drawer_qa, logitorprob=logitorprob)
             scores2, att_qar, att_qar_mask = model(batch_qar, compute_loss=False, output_attention=True, draw_attention=drawer_qar, logitorprob=logitorprob)
-            pdb.set_trace()
+            # pdb.set_trace()
             qa_targets = batch['qa_targets']
             qar_targets = batch['qar_targets']
             if h5fp is not None:
