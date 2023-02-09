@@ -1,5 +1,5 @@
-# UNITER: UNiversal Image-TExt Representation Learning
-This is the official repository of [UNITER](https://arxiv.org/abs/1909.11740) (ECCV 2020).
+# VCR Alignment
+This is the official repository of [VCR Alignment].
 This repository currently supports finetuning UNITER on
 [NLVR2](http://lil.nlp.cornell.edu/nlvr/), [VQA](https://visualqa.org/), [VCR](https://visualcommonsense.com/),
 [SNLI-VE](https://github.com/necla-ml/SNLI-VE), 
@@ -9,7 +9,6 @@ Image-Text Retrieval for [COCO](https://cocodataset.org/#home) and
 Both UNITER-base and UNITER-large pre-trained checkpoints are released.
 UNITER-base pre-training with in-domain data is also available.
 
-![Overview of UNITER](https://acvrpublicycchen.blob.core.windows.net/uniter/uniter_overview_v2.png)
 
 Some code in this repo are copied/modified from opensource implementations made available by
 [PyTorch](https://github.com/pytorch/pytorch),
